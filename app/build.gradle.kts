@@ -26,6 +26,16 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    // Room schema JSON is exported so migrations can be tested against the real
+    // previous schema rather than a hand-written approximation of it.
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
+
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -66,6 +76,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // room-testing transitively pulls JUnit 5 jars, several of which ship
+            // their own META-INF license files. Without this the androidTest APK
+            // fails to merge.
+            excludes += "/META-INF/LICENSE*"
+            excludes += "/META-INF/NOTICE*"
         }
     }
 }
@@ -117,5 +132,6 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.mockk.android)
+    androidTestImplementation(libs.androidx.room.testing)
     androidTestImplementation(platform(libs.androidx.compose.bom))
 }

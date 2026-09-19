@@ -1,0 +1,101 @@
+package com.tape.measure.domain.model
+
+import kotlin.math.roundToInt
+
+/**
+ * How much we trust a measurement, expressed as a tolerance rather than a
+ * confidence percentage.
+ *
+ * Design rationale
+ * ────────────────
+ * Tape's product wedge is honesty about accuracy (see design principle 3).
+ * A confidence percentage ("92% confident") is not falsifiable and is what every
+ * competitor fakes. A tolerance ("±3 cm") is a concrete, checkable claim: the user
+ * can hold a physical tape against the same span and see whether we were right.
+ *
+ * We therefore lead with tolerance in the UI and never display a bare percentage.
+ *
+ * @see com.tape.measure.domain.accuracy.AccuracyEngine for how these are derived.
+ */
+enum class AccuracyGrade {
+    /** Tolerance ≤ 2% of the measured span. Safe for buying-decision use. */
+    HIGH,
+
+    /** Tolerance 2–5%. Usable for rough planning, not for cutting material. */
+    FAIR,
+
+    /** Tolerance > 5%. Directional only — tell the user to grab a real tape. */
+    LOW,
+
+    /** We cannot bound the error at all. Refuse to show a number. */
+    UNAVAILABLE,
+
+    /**
+     * Saved before the accuracy engine existed. We deliberately do NOT
+     * back-fill a tolerance for these — inventing one retroactively would be
+     * the same dishonesty in a new place.
+     */
+    UNKNOWN;
+
+    /** Short label for the confidence badge. */
+    fun label(): String = when (this) {
+        HIGH        -> "Good"
+        FAIR        -> "Lower accuracy"
+        LOW         -> "Unreliable"
+        UNAVAILABLE -> "Can't verify"
+        UNKNOWN     -> "Not recorded"
+    }
+}
+
+/**
+ * The result of bounding the error on a single measurement.
+ *
+ * [toleranceMeters] is a ± half-width: a reading of 1.40 m with a tolerance of
+ * 0.03 m means we believe the true value lies in [1.37, 1.43].
+ *
+ * [relative] is [toleranceMeters] / distance, retained so the UI can show a
+ * percentage alongside the absolute figure without recomputing it.
+ *
+ * [reason] is a plain-language sentence explaining the dominant error source.
+ * It is always non-empty — if we can't explain it, we shouldn't claim it.
+ */
+data class AccuracyEstimate(
+    val grade: AccuracyGrade,
+    val toleranceMeters: Float,
+    val relative: Float,
+    val reason: String,
+) {
+    /**
+     * Formats the tolerance in [unit], e.g. "±3.0 cm".
+     * Returns null when there is no defensible number to show.
+     */
+    fun formatTolerance(unit: UnitSystem): String? =
+        if (grade == AccuracyGrade.UNAVAILABLE || grade == AccuracyGrade.UNKNOWN) null
+        else "±" + unit.format(toleranceMeters)
+
+    /** Formats the relative error as a whole percentage, e.g. "2%". */
+    fun formatRelative(): String? =
+        if (grade == AccuracyGrade.UNAVAILABLE || grade == AccuracyGrade.UNKNOWN) null
+        else "${(relative * 100f).roundToInt()}%"
+
+    companion object {
+        /**
+         * Used when anchors aren't tracking or no measurement exists.
+         * Carries an explanation so the UI never shows a bare dash.
+         */
+        fun unavailable(reason: String): AccuracyEstimate = AccuracyEstimate(
+            grade           = AccuracyGrade.UNAVAILABLE,
+            toleranceMeters = 0f,
+            relative        = 0f,
+            reason          = reason,
+        )
+
+        /** Used for rows persisted before the accuracy engine shipped. */
+        val UNKNOWN: AccuracyEstimate = AccuracyEstimate(
+            grade           = AccuracyGrade.UNKNOWN,
+            toleranceMeters = 0f,
+            relative        = 0f,
+            reason          = "Saved before Tape recorded accuracy.",
+        )
+    }
+}

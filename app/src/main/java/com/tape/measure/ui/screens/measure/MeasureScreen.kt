@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -52,6 +53,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.ar.core.TrackingState
+import com.tape.measure.domain.model.AccuracyEstimate
+import com.tape.measure.domain.model.AccuracyGrade
+import com.tape.measure.domain.model.UnitSystem
 import com.tape.measure.ui.theme.AmberBottom
 import com.tape.measure.ui.theme.AmberTop
 import com.tape.measure.ui.theme.ConfidenceHigh
@@ -140,7 +144,7 @@ fun MeasureScreen(
         val dist = uiState.distanceMeters
         val midX = if (pA != null && pB != null) ((pA.x + pB.x) / 2f).roundToInt() else 0
         val midY = if (pA != null && pB != null)
-            ((pA.y + pB.y) / 2f).roundToInt() - with(density) { 28.dp.roundToPx() } else 0
+            ((pA.y + pB.y) / 2f).roundToInt() - with(density) { 34.dp.roundToPx() } else 0
         AnimatedVisibility(
             visible  = pA != null && pB != null && dist != null,
             enter    = fadeIn(),
@@ -149,7 +153,11 @@ fun MeasureScreen(
                 .align(Alignment.TopStart)
                 .offset { IntOffset(midX, midY) },
         ) {
-            DistancePill(text = dist?.let { uiState.unitSystem.format(it) } ?: "")
+            DistancePill(
+                text      = dist?.let { uiState.unitSystem.format(it) } ?: "",
+                tolerance = uiState.accuracy?.formatTolerance(uiState.unitSystem),
+                grade     = uiState.accuracy?.grade,
+            )
         }
 
         // ── 3. Top HUD ────────────────────────────────────────────────────────
@@ -160,6 +168,8 @@ fun MeasureScreen(
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             confidence           = uiState.confidence,
+            accuracy             = uiState.accuracy,
+            unitSystem           = uiState.unitSystem,
             currentUnitLabel     = uiState.unitSystem.label(),
             onUnitTap            = { viewModel.cycleUnit() },
             onNavigateToSaved    = onNavigateToSaved,
@@ -175,6 +185,7 @@ fun MeasureScreen(
                 .padding(horizontal = 24.dp, vertical = 24.dp),
             phase       = uiState.phase,
             isSaving    = uiState.isSaving,
+            accuracy    = uiState.accuracy,
             onReset     = { viewModel.reset() },
             onSave      = { viewModel.saveMeasurement() },
         )
@@ -244,9 +255,19 @@ private fun MeasurementCanvas(
 // Distance pill
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Distance readout at the measurement midpoint.
+ *
+ * Confidence-Forward treatment (execution.md → "Default AR variation = 1c"):
+ * the tolerance sits directly under the value in the grade's colour, so the
+ * user reads "2.10 m ±2.3 cm" as one unit rather than having to hunt for an
+ * accuracy indicator elsewhere on screen.
+ */
 @Composable
 private fun DistancePill(
     text: String,
+    tolerance: String?,
+    grade: AccuracyGrade?,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -255,14 +276,37 @@ private fun DistancePill(
         color     = InkBackground.copy(alpha = 0.82f),
         tonalElevation = 0.dp,
     ) {
-        Text(
-            text      = text,
-            style     = TapeMeasurement.Medium,
-            color     = AmberTop,
-            modifier  = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            textAlign = TextAlign.Center,
-        )
+        Column(
+            modifier            = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text      = text,
+                style     = TapeMeasurement.Medium,
+                color     = AmberTop,
+                textAlign = TextAlign.Center,
+            )
+            if (tolerance != null) {
+                Text(
+                    text      = tolerance,
+                    style     = MaterialTheme.typography.bodySmall,
+                    color     = grade.tint(),
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
     }
+}
+
+/** Maps an accuracy grade to its badge colour. Null / unknown reads as muted. */
+@Composable
+private fun AccuracyGrade?.tint(): Color = when (this) {
+    AccuracyGrade.HIGH        -> ConfidenceHigh
+    AccuracyGrade.FAIR        -> ConfidenceMedium
+    AccuracyGrade.LOW         -> ConfidenceLow
+    AccuracyGrade.UNAVAILABLE -> ConfidenceLow
+    AccuracyGrade.UNKNOWN,
+    null                      -> Color.White.copy(alpha = 0.6f)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,6 +316,8 @@ private fun DistancePill(
 @Composable
 private fun TopHud(
     confidence:           TrackingConfidence,
+    accuracy:             AccuracyEstimate?,
+    unitSystem:           UnitSystem,
     currentUnitLabel:     String,
     onUnitTap:            () -> Unit,
     onNavigateToSaved:    () -> Unit,
@@ -281,10 +327,14 @@ private fun TopHud(
     Row(
         modifier              = modifier,
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment     = Alignment.CenterVertically,
+        verticalAlignment     = Alignment.Top,
     ) {
         // Confidence badge (left)
-        ConfidenceBadge(confidence = confidence)
+        ConfidenceBadge(
+            confidence = confidence,
+            accuracy   = accuracy,
+            unitSystem = unitSystem,
+        )
 
         // Unit chip + nav icons (right)
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -308,19 +358,44 @@ private fun TopHud(
     }
 }
 
+/**
+ * Session-tracking badge.
+ *
+ * Before both points are placed it reports session tracking only. Once a
+ * measurement exists it reports the READING's grade and real tolerance instead,
+ * because that is what the user is actually deciding on.
+ *
+ * It no longer prints a fixed "±1 cm" — every figure here comes from
+ * AccuracyEngine and moves with distance, placement range and tracking state.
+ */
 @Composable
 private fun ConfidenceBadge(
     confidence: TrackingConfidence,
+    accuracy: AccuracyEstimate?,
+    unitSystem: UnitSystem,
     modifier: Modifier = Modifier,
 ) {
-    val dotColor = when (confidence) {
-        TrackingConfidence.HIGH         -> ConfidenceHigh
-        TrackingConfidence.LOW          -> ConfidenceMedium
-        TrackingConfidence.NOT_TRACKING -> ConfidenceLow
+    val hasReading = accuracy != null
+
+    val dotColor = if (hasReading) {
+        accuracy!!.grade.tint()
+    } else {
+        when (confidence) {
+            TrackingConfidence.HIGH         -> ConfidenceHigh
+            TrackingConfidence.LOW          -> ConfidenceMedium
+            TrackingConfidence.NOT_TRACKING -> ConfidenceLow
+        }
     }
 
+    val title = if (hasReading) accuracy!!.grade.label() else confidence.label()
+
+    // Secondary line: the real tolerance when we have one, otherwise nothing.
+    // Deliberately blank rather than a placeholder — we don't fill space with
+    // a number we haven't earned.
+    val detail = accuracy?.formatTolerance(unitSystem)
+
     Surface(
-        modifier       = modifier,
+        modifier       = modifier.widthIn(max = 220.dp),
         shape          = RoundedCornerShape(20.dp),
         color          = InkBackground.copy(alpha = 0.72f),
         tonalElevation = 0.dp,
@@ -337,17 +412,19 @@ private fun ConfidenceBadge(
             Spacer(Modifier.width(6.dp))
             Column {
                 Text(
-                    text  = confidence.label(),
+                    text  = title,
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White,
                 )
-                Text(
-                    text  = confidence.accuracyHint(),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = MaterialTheme.typography.bodySmall.fontSize * 0.85f,
-                    ),
-                    color = Color.White.copy(alpha = 0.6f),
-                )
+                if (detail != null) {
+                    Text(
+                        text  = detail,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = MaterialTheme.typography.bodySmall.fontSize * 0.85f,
+                        ),
+                        color = Color.White.copy(alpha = 0.6f),
+                    )
+                }
             }
         }
     }
@@ -382,6 +459,7 @@ private fun UnitChip(
 private fun BottomControls(
     phase:    MeasurePhase,
     isSaving: Boolean,
+    accuracy: AccuracyEstimate?,
     onReset:  () -> Unit,
     onSave:   () -> Unit,
     modifier: Modifier = Modifier,
@@ -391,8 +469,9 @@ private fun BottomControls(
         horizontalAlignment   = Alignment.CenterHorizontally,
         verticalArrangement   = Arrangement.spacedBy(12.dp),
     ) {
-        // Hint text changes per phase
-        val hint = when (phase) {
+        // Once a reading exists, the accuracy explanation replaces the generic
+        // hint — it's strictly more useful and tells the user what to change.
+        val hint = accuracy?.reason ?: when (phase) {
             MeasurePhase.IDLE    -> "Point at a flat surface, then tap to place the first point."
             MeasurePhase.POINT_A -> "First point set. Tap to place the second point."
             MeasurePhase.BOTH    -> "Tap anywhere to start a new measurement."
@@ -436,10 +515,14 @@ private fun BottomControls(
                     Text("Reset", style = MaterialTheme.typography.labelLarge)
                 }
 
-                // Save button (wires to Room in item 6)
+                // Save is blocked while the error can't be bounded: persisting a
+                // distance with no verifiable tolerance would put an unqualified
+                // number in the saved list.
+                val canSave = accuracy != null &&
+                    accuracy.grade != AccuracyGrade.UNAVAILABLE
                 Button(
                     onClick  = onSave,
-                    enabled  = !isSaving,
+                    enabled  = !isSaving && canSave,
                     modifier = Modifier.weight(1f),
                     shape    = MaterialTheme.shapes.medium,
                     colors   = ButtonDefaults.buttonColors(

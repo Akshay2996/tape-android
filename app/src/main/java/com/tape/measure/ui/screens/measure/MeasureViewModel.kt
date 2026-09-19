@@ -9,10 +9,17 @@ import com.google.ar.core.Camera
 import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
+import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import com.tape.measure.data.db.MeasurementEntity
 import com.tape.measure.data.prefs.UserPreferencesRepository
 import com.tape.measure.data.repository.MeasurementRepository
+import com.tape.measure.domain.accuracy.AccuracyEngine
+import com.tape.measure.domain.accuracy.AccuracyInput
+import com.tape.measure.domain.accuracy.AnchorObservation
+import com.tape.measure.domain.accuracy.AnchorSurface
+import com.tape.measure.domain.accuracy.TrackingIssue
+import com.tape.measure.domain.model.AccuracyEstimate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,14 +43,17 @@ import kotlin.math.sqrt
  *   We extract only primitive FloatArrays from ARCore objects (no ARCore handles
  *   escape the render thread beyond what ARCore's own threading model allows).
  *
- * • [onTap], [cycleUnit], [reset] are called from the main thread (gesture callbacks).
- *   Anchor references are @Volatile so the render thread always sees the latest value
- *   without needing a full lock.
+ * • [enqueueTap], [cycleUnit], [reset] are called from the main thread (gesture
+ *   callbacks). Anchor references are @Volatile so the render thread always sees
+ *   the latest value without needing a full lock.
  *
- * Save flow
- * ─────────
- * Room repository will be injected here in a future step (item 6). The [saveMeasurement]
- * stub already has the right signature so MeasureScreen doesn't need to change later.
+ * Accuracy
+ * ────────
+ * Placement metadata (how far the camera was from the surface, and whether the
+ * hit landed on a tracked Plane or a raw feature point) is captured ONCE at tap
+ * time — it describes the moment of placement and cannot be recovered later.
+ * It is then fed to [AccuracyEngine] every frame alongside live tracking state.
+ * See domain/accuracy/AccuracyEngine.kt for the error model.
  */
 @HiltViewModel
 class MeasureViewModel @Inject constructor(
@@ -64,6 +74,14 @@ class MeasureViewModel @Inject constructor(
     @Volatile private var anchorA: Anchor? = null
     @Volatile private var anchorB: Anchor? = null
 
+    /**
+     * Placement-time metadata for each anchor. Captured at tap because
+     * HitResult.distance and the trackable type are only knowable then.
+     * Null until the corresponding anchor is placed.
+     */
+    @Volatile private var placementA: PlacementRecord? = null
+    @Volatile private var placementB: PlacementRecord? = null
+
     // Pending tap screen coordinates — set from main thread, consumed on render thread.
     @Volatile private var pendingTapX: Float = -1f
     @Volatile private var pendingTapY: Float = -1f
@@ -78,6 +96,12 @@ class MeasureViewModel @Inject constructor(
     private val worldPoint = FloatArray(4)
     private val viewPoint  = FloatArray(4)
     private val clipPoint  = FloatArray(4)
+
+    /** What we knew about an anchor at the instant the user placed it. */
+    private data class PlacementRecord(
+        val rangeMeters: Float,
+        val surface: AnchorSurface,
+    )
 
     // ── Lifecycle hooks (called from MeasureScreen) ──────────────────────────
 
@@ -94,13 +118,28 @@ class MeasureViewModel @Inject constructor(
     /**
      * Called every AR frame from the GL render thread. Reads tracking state,
      * processes any queued tap via [Frame.hitTest], projects anchor poses to
-     * screen space, and pushes an updated [MeasureUiState].
+     * screen space, recomputes the accuracy bound, and pushes an updated
+     * [MeasureUiState].
      */
     fun onFrame(camera: Camera, frame: Frame) {
-        val confidence = camera.trackingState.toConfidence()
+        val cameraTracking = camera.trackingState == TrackingState.TRACKING
+        val confidence = camera.toConfidence()
 
-        if (camera.trackingState != TrackingState.TRACKING) {
-            _uiState.update { it.copy(confidence = confidence) }
+        if (!cameraTracking) {
+            // Anchors may be drifting — surface that honestly rather than
+            // leaving a stale tolerance on screen.
+            _uiState.update {
+                it.copy(
+                    confidence = confidence,
+                    accuracy   = if (it.phase == MeasurePhase.BOTH) {
+                        AccuracyEstimate.unavailable(
+                            "Camera isn't tracking. Move the phone slowly to re-lock."
+                        )
+                    } else {
+                        null
+                    },
+                )
+            }
             return
         }
 
@@ -111,7 +150,10 @@ class MeasureViewModel @Inject constructor(
             pendingTapX = -1f
             pendingTapY = -1f
             frame.hitTest(tapX, tapY)
-                .firstOrNull { it.trackable is Plane && it.trackable.trackingState == TrackingState.TRACKING }
+                .firstOrNull { hit ->
+                    val t = hit.trackable
+                    t is Plane && t.trackingState == TrackingState.TRACKING && t.isPoseInPolygon(hit.hitPose)
+                }
                 ?.let { onTap(it) }
         }
 
@@ -119,25 +161,83 @@ class MeasureViewModel @Inject constructor(
         camera.getViewMatrix(viewMatrix, 0)
         camera.getProjectionMatrix(projMatrix, 0, 0.1f, 100f)
 
-        val poseA = anchorA?.takeIf { it.trackingState == TrackingState.TRACKING }?.pose
-        val poseB = anchorB?.takeIf { it.trackingState == TrackingState.TRACKING }?.pose
+        val trackedA = anchorA?.takeIf { it.trackingState == TrackingState.TRACKING }
+        val trackedB = anchorB?.takeIf { it.trackingState == TrackingState.TRACKING }
+        val poseA = trackedA?.pose
+        val poseB = trackedB?.pose
+
+        val distance = if (poseA != null && poseB != null) {
+            distance(
+                poseA.tx(), poseA.ty(), poseA.tz(),
+                poseB.tx(), poseB.ty(), poseB.tz(),
+            )
+        } else {
+            null
+        }
+
+        val accuracy = computeAccuracy(
+            distance       = distance,
+            cameraTracking = true,
+            issue          = camera.trackingFailureReason.toIssue(),
+            anchorATracked = trackedA != null,
+            anchorBTracked = trackedB != null,
+        )
 
         _uiState.update { state ->
             state.copy(
                 confidence     = confidence,
                 screenPointA   = poseA?.let { project(it.tx(), it.ty(), it.tz()) },
                 screenPointB   = poseB?.let { project(it.tx(), it.ty(), it.tz()) },
-                distanceMeters = if (poseA != null && poseB != null) {
-                    distance(
-                        poseA.tx(), poseA.ty(), poseA.tz(),
-                        poseB.tx(), poseB.ty(), poseB.tz(),
-                    )
-                } else null,
+                distanceMeters = distance,
+                accuracy       = accuracy,
             )
         }
     }
 
-    // ── User-interaction handlers (main thread) ───────────────────────────────
+    /**
+     * Builds the accuracy estimate for the current frame, or null when there is
+     * nothing to estimate yet (fewer than two points placed).
+     *
+     * Deliberately returns [AccuracyEstimate.unavailable] rather than null when
+     * points exist but can't be trusted — "we can't verify this" is information;
+     * a blank space is not.
+     */
+    private fun computeAccuracy(
+        distance: Float?,
+        cameraTracking: Boolean,
+        issue: TrackingIssue,
+        anchorATracked: Boolean,
+        anchorBTracked: Boolean,
+    ): AccuracyEstimate? {
+        val recA = placementA ?: return null
+        val recB = placementB ?: return null
+
+        if (distance == null) {
+            return AccuracyEstimate.unavailable(
+                "A point lost tracking and may have drifted. Re-place it."
+            )
+        }
+
+        return AccuracyEngine.estimate(
+            AccuracyInput(
+                distanceMeters   = distance,
+                cameraIsTracking = cameraTracking,
+                issue            = issue,
+                anchorA = AnchorObservation(
+                    placementRangeMeters = recA.rangeMeters,
+                    surface              = recA.surface,
+                    isTracking           = anchorATracked,
+                ),
+                anchorB = AnchorObservation(
+                    placementRangeMeters = recB.rangeMeters,
+                    surface              = recB.surface,
+                    isTracking           = anchorBTracked,
+                ),
+            )
+        )
+    }
+
+    // ── User-interaction handlers ─────────────────────────────────────────────
 
     /** Queues screen-space tap coordinates to be processed in the next [onFrame] call. */
     fun enqueueTap(x: Float, y: Float) {
@@ -146,17 +246,31 @@ class MeasureViewModel @Inject constructor(
     }
 
     /**
-     * Places an anchor at the given hit result. Called from [onFrame] on the render thread
-     * after a successful plane hit test, or directly from tests.
+     * Places an anchor at the given hit result, capturing the placement metadata
+     * the accuracy engine needs. Called from [onFrame] on the render thread after
+     * a successful plane hit test.
      */
     fun onTap(hitResult: HitResult) {
+        val record = PlacementRecord(
+            // HitResult.distance is the camera→hit-point range in metres. This is
+            // only available at hit time, which is why we record it now.
+            rangeMeters = hitResult.distance,
+            surface     = if (hitResult.trackable is Plane) {
+                AnchorSurface.PLANE
+            } else {
+                AnchorSurface.POINT
+            },
+        )
+
         when (_uiState.value.phase) {
             MeasurePhase.IDLE -> {
                 anchorA = hitResult.createAnchor()
+                placementA = record
                 _uiState.update { it.copy(phase = MeasurePhase.POINT_A) }
             }
             MeasurePhase.POINT_A -> {
                 anchorB = hitResult.createAnchor()
+                placementB = record
                 _uiState.update { it.copy(phase = MeasurePhase.BOTH) }
             }
             MeasurePhase.BOTH -> reset()   // third tap = start over
@@ -172,38 +286,54 @@ class MeasureViewModel @Inject constructor(
     fun reset() {
         anchorA?.detach().also { anchorA = null }
         anchorB?.detach().also { anchorB = null }
+        placementA = null
+        placementB = null
         _uiState.update {
             it.copy(
                 phase          = MeasurePhase.IDLE,
                 screenPointA   = null,
                 screenPointB   = null,
                 distanceMeters = null,
+                accuracy       = null,
                 justSaved      = false,
             )
         }
     }
 
+    /**
+     * Persists the current measurement together with its real error bound.
+     *
+     * Refuses to save when the accuracy is unverifiable — storing a distance
+     * whose error we couldn't bound would put an unqualified number in the saved
+     * list, which is precisely the dishonesty this feature removes.
+     */
     fun saveMeasurement(label: String = "") {
-        val dist = _uiState.value.distanceMeters ?: return
-        val unit = _uiState.value.unitSystem
-        val conf = when (_uiState.value.confidence) {
-            TrackingConfidence.HIGH         -> 0.9f
-            TrackingConfidence.LOW          -> 0.5f
-            TrackingConfidence.NOT_TRACKING -> 0.1f
-        }
+        val snapshot = _uiState.value
+        val dist = snapshot.distanceMeters ?: return
+        val estimate = snapshot.accuracy ?: return
+
+        if (estimate.grade == com.tape.measure.domain.model.AccuracyGrade.UNAVAILABLE) return
+
         viewModelScope.launch {
+            _uiState.update { it.copy(isSaving = true) }
             repository.save(
                 MeasurementEntity(
-                    id            = UUID.randomUUID().toString(),
-                    distanceMeters = dist,
-                    unit          = unit.name,
-                    label         = label.ifBlank { null },
-                    confidence    = conf,
-                    createdAt     = System.currentTimeMillis(),
+                    id              = UUID.randomUUID().toString(),
+                    distanceMeters  = dist,
+                    unit            = snapshot.unitSystem.name,
+                    label           = label.ifBlank { null },
+                    toleranceMeters = estimate.toleranceMeters,
+                    accuracyGrade   = estimate.grade.name,
+                    createdAt       = System.currentTimeMillis(),
                 )
             )
-            _uiState.update { it.copy(justSaved = true) }
+            _uiState.update { it.copy(isSaving = false, justSaved = true) }
         }
+    }
+
+    /** Clears the transient post-save flag once the UI has acknowledged it. */
+    fun consumeSavedFlag() {
+        _uiState.update { it.copy(justSaved = false) }
     }
 
     override fun onCleared() {
@@ -246,9 +376,30 @@ class MeasureViewModel @Inject constructor(
         return sqrt(dx * dx + dy * dy + dz * dz)
     }
 
-    private fun TrackingState.toConfidence(): TrackingConfidence = when (this) {
-        TrackingState.TRACKING -> TrackingConfidence.HIGH
-        TrackingState.PAUSED   -> TrackingConfidence.LOW
-        TrackingState.STOPPED  -> TrackingConfidence.NOT_TRACKING
+    /**
+     * Session-level tracking quality for the HUD badge.
+     *
+     * A camera that is TRACKING but reporting a failure reason is recovering
+     * rather than locked, so it is reported as LOW — not HIGH.
+     */
+    private fun Camera.toConfidence(): TrackingConfidence = when (trackingState) {
+        TrackingState.TRACKING ->
+            if (trackingFailureReason == TrackingFailureReason.NONE) {
+                TrackingConfidence.HIGH
+            } else {
+                TrackingConfidence.LOW
+            }
+        TrackingState.PAUSED  -> TrackingConfidence.LOW
+        TrackingState.STOPPED -> TrackingConfidence.NOT_TRACKING
+    }
+
+    /** Bridges ARCore's native-backed enum to the engine's pure-Kotlin mirror. */
+    private fun TrackingFailureReason.toIssue(): TrackingIssue = when (this) {
+        TrackingFailureReason.NONE                  -> TrackingIssue.NONE
+        TrackingFailureReason.BAD_STATE             -> TrackingIssue.BAD_STATE
+        TrackingFailureReason.INSUFFICIENT_LIGHT    -> TrackingIssue.INSUFFICIENT_LIGHT
+        TrackingFailureReason.EXCESSIVE_MOTION      -> TrackingIssue.EXCESSIVE_MOTION
+        TrackingFailureReason.INSUFFICIENT_FEATURES -> TrackingIssue.INSUFFICIENT_FEATURES
+        TrackingFailureReason.CAMERA_UNAVAILABLE    -> TrackingIssue.CAMERA_UNAVAILABLE
     }
 }

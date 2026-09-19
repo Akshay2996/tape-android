@@ -60,6 +60,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tape.measure.data.db.MeasurementEntity
+import com.tape.measure.domain.model.AccuracyGrade
+import com.tape.measure.ui.theme.ConfidenceHigh
+import com.tape.measure.ui.theme.ConfidenceLow
+import com.tape.measure.ui.theme.ConfidenceMedium
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -103,9 +107,23 @@ fun SavedListScreen(
                     icon = Icons.Outlined.Share,
                     label = "Share",
                     onClick = {
+                        // Share the tolerance alongside the value. A number sent
+                        // to someone else without its error bound is the same
+                        // overclaim Tape exists to avoid — it just travels further.
+                        val grade = runCatching {
+                            AccuracyGrade.valueOf(entity.accuracyGrade)
+                        }.getOrDefault(AccuracyGrade.UNKNOWN)
+
                         val text = buildString {
                             entity.label?.let { append(it).append(": ") }
                             append(uiState.unitSystem.format(entity.distanceMeters))
+                            if (grade != AccuracyGrade.UNKNOWN &&
+                                grade != AccuracyGrade.UNAVAILABLE
+                            ) {
+                                append(" ±")
+                                append(uiState.unitSystem.format(entity.toleranceMeters))
+                            }
+                            append("\nMeasured with Tape")
                         }
                         val intent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
@@ -232,9 +250,22 @@ fun SavedListScreen(
         ) {
             LazyColumn {
                 items(uiState.measurements, key = { it.id }) { entity ->
+                    val grade = remember(entity.accuracyGrade) {
+                        runCatching { AccuracyGrade.valueOf(entity.accuracyGrade) }
+                            .getOrDefault(AccuracyGrade.UNKNOWN)
+                    }
                     MeasurementCard(
                         entity = entity,
                         formattedValue = uiState.unitSystem.format(entity.distanceMeters),
+                        formattedTolerance = if (
+                            grade == AccuracyGrade.UNKNOWN ||
+                            grade == AccuracyGrade.UNAVAILABLE
+                        ) {
+                            null
+                        } else {
+                            "±" + uiState.unitSystem.format(entity.toleranceMeters)
+                        },
+                        grade = grade,
                         onLongPress = { selectedEntity = entity },
                     )
                     HorizontalDivider(
@@ -252,6 +283,8 @@ fun SavedListScreen(
 private fun MeasurementCard(
     entity: MeasurementEntity,
     formattedValue: String,
+    formattedTolerance: String?,
+    grade: AccuracyGrade,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -292,19 +325,48 @@ private fun MeasurementCard(
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer,
-            ) {
-                Text(
-                    text = formattedValue,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                )
+            Column(horizontalAlignment = Alignment.End) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Text(
+                        text = formattedValue,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+                // The tolerance travels with the saved value. A number without its
+                // error bound is exactly what Tape refuses to show.
+                if (formattedTolerance != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = formattedTolerance,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = gradeTint(grade),
+                    )
+                } else if (grade == AccuracyGrade.UNKNOWN) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "accuracy not recorded",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
+}
+
+/** Maps a persisted accuracy grade to its badge colour. */
+@Composable
+private fun gradeTint(grade: AccuracyGrade): androidx.compose.ui.graphics.Color = when (grade) {
+    AccuracyGrade.HIGH        -> ConfidenceHigh
+    AccuracyGrade.FAIR        -> ConfidenceMedium
+    AccuracyGrade.LOW         -> ConfidenceLow
+    AccuracyGrade.UNAVAILABLE -> ConfidenceLow
+    AccuracyGrade.UNKNOWN     -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @Composable

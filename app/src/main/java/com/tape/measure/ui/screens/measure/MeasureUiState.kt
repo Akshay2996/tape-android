@@ -1,6 +1,7 @@
 package com.tape.measure.ui.screens.measure
 
 import androidx.compose.ui.geometry.Offset
+import com.tape.measure.domain.model.AccuracyEstimate
 import com.tape.measure.domain.model.UnitSystem
 
 /**
@@ -18,6 +19,12 @@ enum class MeasurePhase { IDLE, POINT_A, BOTH }
  *  NOT_TRACKING – session paused or stopped; can't place points
  *  LOW          – tracking is shaky / recovering; accuracy worse
  *  HIGH         – full TRACKING state; best accuracy
+ *
+ * NOTE: this describes the SESSION, not the measurement. How much to trust a
+ * given reading lives in [MeasureUiState.accuracy], which is derived from
+ * distance, placement range, surface type and tracking failure reason — not
+ * from this enum alone. The two are deliberately separate: good session
+ * tracking does not by itself make a 6 m span accurate.
  */
 enum class TrackingConfidence {
     NOT_TRACKING,
@@ -27,19 +34,8 @@ enum class TrackingConfidence {
     /** Short label shown in the confidence badge. */
     fun label(): String = when (this) {
         NOT_TRACKING -> "No tracking"
-        LOW          -> "Low accuracy"
-        HIGH         -> "Good tracking"
-    }
-
-    /**
-     * Approximate accuracy range to display next to the badge.
-     * Values are informed by ARCore's typical plane-detection accuracy
-     * at normal distances (0.5–3 m from a flat surface).
-     */
-    fun accuracyHint(): String = when (this) {
-        NOT_TRACKING -> "–"
-        LOW          -> "±3 cm"
-        HIGH         -> "±1 cm"
+        LOW          -> "Tracking recovering"
+        HIGH         -> "Tracking locked"
     }
 }
 
@@ -59,6 +55,11 @@ data class MeasureUiState(
     val screenPointB: Offset? = null,
     /** Raw distance in metres between the two anchors. */
     val distanceMeters: Float? = null,
+    /**
+     * Honest error bound for the current reading, recomputed every frame from
+     * live AR signals. Null until both points are placed.
+     */
+    val accuracy: AccuracyEstimate? = null,
     /** Which unit to display the distance in. */
     val unitSystem: UnitSystem = UnitSystem.CM,
     /** True while save operation is in-flight (spinner on Save button). */

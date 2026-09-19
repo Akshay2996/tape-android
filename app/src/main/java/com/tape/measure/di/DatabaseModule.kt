@@ -15,11 +15,15 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    /**
+     * Note: [fallbackToDestructiveMigration] is deliberately NOT used. Saved
+     * measurements can't be regenerated, so schema changes ship real migrations.
+     */
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): TapeDatabase =
         Room.databaseBuilder(context, TapeDatabase::class.java, "tape_db")
-            .fallbackToDestructiveMigration()
+            .addMigrations(TapeDatabase.MIGRATION_1_2)
             .build()
 
     @Provides
