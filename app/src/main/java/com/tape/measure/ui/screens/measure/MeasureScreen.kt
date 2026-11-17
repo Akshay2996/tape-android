@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,10 +21,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -35,27 +39,42 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.ar.core.TrackingState
-import com.tape.measure.domain.model.AccuracyEstimate
+import com.tape.measure.ar.ArCoreFrame
+import com.tape.measure.ar.configureForMeasuring
 import com.tape.measure.domain.model.AccuracyGrade
 import com.tape.measure.domain.model.UnitSystem
+import com.tape.measure.domain.shape.MeasureTool
+import com.tape.measure.domain.shape.Reading
+import com.tape.measure.domain.shape.ShapeAccuracy
+import com.tape.measure.domain.shape.format
+import com.tape.measure.domain.shape.formatTolerance
+import com.tape.measure.domain.shape.formatValue
+import com.tape.measure.sim.SimCamera
+import com.tape.measure.sim.SimFrame
+import com.tape.measure.sim.SimWorld
 import com.tape.measure.ui.theme.AmberBottom
 import com.tape.measure.ui.theme.AmberTop
 import com.tape.measure.ui.theme.ConfidenceHigh
@@ -66,197 +85,209 @@ import com.tape.measure.ui.theme.TapeMeasurement
 import io.github.sceneview.ar.ARScene
 import kotlin.math.roundToInt
 
+/** Label a practice-room measurement is saved under, so it can't pass for a real one. */
+private const val PRACTICE_LABEL = "Practice room"
+
 /**
- * Core AR measurement screen.
+ * The measurement screen.
  *
  * Layout (all fullscreen, stacked in a Box):
- *   1. [ARScene]          — camera feed + plane-detection grid  (SceneView)
- *   2. [MeasurementCanvas]— amber dots + connecting line + distance pill
- *   3. [TopHud]           — confidence badge (left) + unit chip + nav icons (right)
- *   4. [BottomControls]   — phase-aware hint / Reset / Save buttons
+ *   1. The world       — the camera feed ([ARScene]), or the practice room
+ *   2. [ShapeOverlay]  — the shape in progress, its points, and the reticle
+ *   3. [DimensionLabel]s — each edge's length, next to the edge
+ *   4. [TopHud]        — accuracy badge (left) + unit chip + nav icons (right)
+ *   5. [BottomControls] — hint, readings, tool picker, actions
  *
- * Threading:
- *   ARScene calls [MeasureViewModel.onFrame] on the GL render thread.
- *   All other callbacks land on the main thread.
- *   See MeasureViewModel KDoc for the full threading contract.
+ * Points go where the centre reticle is aiming; a tap anywhere places one.
+ *
+ * @param simulated true to measure the practice room instead of the camera
+ *        feed — the only option where ARCore can't run.
  */
 @Composable
 fun MeasureScreen(
+    simulated: Boolean,
     onNavigateToSaved: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onDeviceUnsupported: () -> Unit,
     viewModel: MeasureViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-
-    // Pixel dimensions for the 3-D→2-D projection in the ViewModel.
-    var viewportWidth  by remember { mutableStateOf(1) }
-    var viewportHeight by remember { mutableStateOf(1) }
-
-
-    // Pre-compute pixel sizes used in both Canvas and positional offsets.
-    val density = LocalDensity.current
-    val dotRadiusPx    = with(density) { 10.dp.toPx() }
-    val strokeWidthPx  = with(density) { 2.5.dp.toPx() }
-    val dotOutlinePx   = with(density) { 2.dp.toPx() }
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var simCamera by remember { mutableStateOf(SimCamera.START) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .onGloballyPositioned { coords ->
-                val w = coords.size.width
-                val h = coords.size.height
-                if (w != viewportWidth || h != viewportHeight) {
-                    viewportWidth  = w
-                    viewportHeight = h
-                    viewModel.setViewport(w, h)
-                }
+            .onSizeChanged {
+                viewport = it
+                viewModel.setViewport(it.width, it.height)
             }
-            .pointerInput(Unit) {
-                detectTapGestures { offset -> viewModel.enqueueTap(offset.x, offset.y) }
-            },
+            .then(
+                if (simulated) {
+                    Modifier.lookOrTap(
+                        onLook = { yaw, pitch -> simCamera = simCamera.look(yaw, pitch) },
+                        onTap = { viewModel.tap() },
+                    )
+                } else {
+                    Modifier.pointerInput(Unit) { detectTapGestures { viewModel.tap() } }
+                }
+            ),
     ) {
 
-        // ── 1. ARScene (camera background + plane grid) ──────────────────────
-        ARScene(
-            modifier = Modifier.fillMaxSize(),
-            planeRenderer = true,
-            onSessionCreated = { _ -> },
-            onSessionUpdated = { _, frame ->
-                viewModel.onFrame(frame.camera, frame)
-            },
-            onSessionFailed = { _ -> onDeviceUnsupported() },
-        )
-
-        // ── 2. Measurement overlay (Canvas) ──────────────────────────────────
-        MeasurementCanvas(
-            modifier       = Modifier.fillMaxSize(),
-            screenPointA   = uiState.screenPointA,
-            screenPointB   = uiState.screenPointB,
-            dotRadiusPx    = dotRadiusPx,
-            dotOutlinePx   = dotOutlinePx,
-            strokeWidthPx  = strokeWidthPx,
-        )
-
-        // ── Distance pill at midpoint (fades in when both points are set) ──
-        val pA   = uiState.screenPointA
-        val pB   = uiState.screenPointB
-        val dist = uiState.distanceMeters
-        val midX = if (pA != null && pB != null) ((pA.x + pB.x) / 2f).roundToInt() else 0
-        val midY = if (pA != null && pB != null)
-            ((pA.y + pB.y) / 2f).roundToInt() - with(density) { 34.dp.roundToPx() } else 0
-        AnimatedVisibility(
-            visible  = pA != null && pB != null && dist != null,
-            enter    = fadeIn(),
-            exit     = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset { IntOffset(midX, midY) },
-        ) {
-            DistancePill(
-                text      = dist?.let { uiState.unitSystem.format(it) } ?: "",
-                tolerance = uiState.accuracy?.formatTolerance(uiState.unitSystem),
-                grade     = uiState.accuracy?.grade,
+        // ── 1. The world ─────────────────────────────────────────────────────
+        if (simulated) {
+            val world = remember { SimWorld.practiceRoom() }
+            PracticeRoomView(world, simCamera, Modifier.fillMaxSize())
+            LaunchedEffect(world) {
+                while (true) {
+                    withFrameNanos { }
+                    val size = viewport
+                    if (size.width > 0 && size.height > 0) {
+                        viewModel.onFrame(SimFrame(world, simCamera, size.width, size.height))
+                    }
+                }
+            }
+        } else {
+            ARScene(
+                modifier = Modifier.fillMaxSize(),
+                planeRenderer = true,
+                sessionConfiguration = ::configureForMeasuring,
+                onSessionUpdated = { _, frame -> viewModel.onFrame(ArCoreFrame(frame)) },
+                onSessionFailed = { _ -> onDeviceUnsupported() },
             )
         }
 
-        // ── 3. Top HUD ────────────────────────────────────────────────────────
+        // ── 2. Shape overlay ─────────────────────────────────────────────────
+        ShapeOverlay(
+            overlay = uiState.overlay,
+            reticleLocked = uiState.reticleLocked,
+            showReticle = !uiState.isComplete,
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        // ── 3. Dimension labels ──────────────────────────────────────────────
+        // A shape with one figure has one label, which is the headline: it is
+        // drawn large, with its tolerance. Several share the screen, so they
+        // are drawn compact and the readings table carries the tolerances.
+        val prominent = uiState.headlineOnLabel
+        uiState.overlay.labels.forEachIndexed { index, label ->
+            key(index) {
+                DimensionLabel(
+                    label = label,
+                    unitSystem = uiState.unitSystem,
+                    prominent = prominent,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset {
+                            IntOffset(
+                                label.at.x.roundToInt(),
+                                label.at.y.roundToInt() - (if (prominent) 34.dp else 16.dp).roundToPx(),
+                            )
+                        }
+                        .centredOnOrigin(),
+                )
+            }
+        }
+
+        // ── 4. Top HUD ───────────────────────────────────────────────────────
         TopHud(
-            modifier             = Modifier
+            modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
-            confidence           = uiState.confidence,
-            accuracy             = uiState.accuracy,
-            unitSystem           = uiState.unitSystem,
-            currentUnitLabel     = uiState.unitSystem.label(),
-            onUnitTap            = { viewModel.cycleUnit() },
-            onNavigateToSaved    = onNavigateToSaved,
+            confidence = uiState.confidence,
+            accuracy = uiState.accuracy,
+            readings = uiState.readings,
+            unitSystem = uiState.unitSystem,
+            simulated = simulated,
+            onUnitTap = { viewModel.cycleUnit() },
+            onNavigateToSaved = onNavigateToSaved,
             onNavigateToSettings = onNavigateToSettings,
         )
 
-        // ── 4. Bottom controls ────────────────────────────────────────────────
+        if (simulated) {
+            PracticeRoomMovePad(
+                onMove = { forward, right, up -> simCamera = simCamera.move(forward, right, up) },
+                // Under the HUD, over the far wall: the part of the view with
+                // the least in it to measure.
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 72.dp, end = 12.dp),
+            )
+        }
+
+        // ── 5. Bottom controls ───────────────────────────────────────────────
         BottomControls(
-            modifier    = Modifier
+            modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 24.dp),
-            phase       = uiState.phase,
-            isSaving    = uiState.isSaving,
-            accuracy    = uiState.accuracy,
-            onReset     = { viewModel.reset() },
-            onSave      = { viewModel.saveMeasurement() },
+                .padding(vertical = 16.dp),
+            uiState = uiState,
+            onSelectTool = viewModel::selectTool,
+            onUndo = viewModel::undo,
+            onReset = viewModel::reset,
+            onFinish = viewModel::finish,
+            onSave = { viewModel.saveMeasurement(if (simulated) PRACTICE_LABEL else "") },
         )
     }
 }
 
+/** Places content so its centre, not its top-left corner, sits at its position. */
+private fun Modifier.centredOnOrigin(): Modifier = layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+    layout(0, 0) { placeable.place(-placeable.width / 2, -placeable.height / 2) }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Canvas overlay
+// Shape overlay
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun MeasurementCanvas(
-    screenPointA:  Offset?,
-    screenPointB:  Offset?,
-    dotRadiusPx:   Float,
-    dotOutlinePx:  Float,
-    strokeWidthPx: Float,
+private fun ShapeOverlay(
+    overlay: MeasureOverlay,
+    reticleLocked: Boolean,
+    showReticle: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier) {
-        if (screenPointA == null && screenPointB == null) return@Canvas
+        val stroke = 2.5.dp.toPx()
+        val dotRadius = 7.dp.toPx()
+        val dotRing = 2.dp.toPx()
 
-        // Connecting line (drawn first so dots sit on top)
-        if (screenPointA != null && screenPointB != null) {
+        // Lines first so dots sit on top.
+        overlay.segments.forEach { segment ->
             drawLine(
-                color       = Color.White.copy(alpha = 0.75f),
-                start       = screenPointA,
-                end         = screenPointB,
-                strokeWidth = strokeWidthPx,
-                cap         = StrokeCap.Round,
+                color = Color.White.copy(alpha = 0.75f),
+                start = Offset(segment.a.x, segment.a.y),
+                end = Offset(segment.b.x, segment.b.y),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
             )
         }
-
-        // Dot A
-        if (screenPointA != null) {
-            // Outer ring
-            drawCircle(
-                color  = Color.White.copy(alpha = 0.6f),
-                radius = dotRadiusPx + dotOutlinePx,
-                center = screenPointA,
-            )
-            // Filled core
-            drawCircle(
-                color  = AmberBottom,
-                radius = dotRadiusPx,
-                center = screenPointA,
-            )
+        overlay.dots.forEach { dot ->
+            val centre = Offset(dot.x, dot.y)
+            drawCircle(Color.White.copy(alpha = 0.6f), dotRadius + dotRing, centre)
+            drawCircle(AmberBottom, dotRadius, centre)
         }
 
-        // Dot B (same style as A — both endpoints look identical)
-        if (screenPointB != null) {
-            drawCircle(
-                color  = Color.White.copy(alpha = 0.6f),
-                radius = dotRadiusPx + dotOutlinePx,
-                center = screenPointB,
-            )
-            drawCircle(
-                color  = AmberBottom,
-                radius = dotRadiusPx,
-                center = screenPointB,
-            )
+        // Reticle: where the next tap will land. Amber once it is on something.
+        if (showReticle) {
+            val tint = if (reticleLocked) AmberTop else Color.White.copy(alpha = 0.5f)
+            drawCircle(tint, 18.dp.toPx(), center, style = Stroke(width = 2.dp.toPx()))
+            drawCircle(tint, 2.5.dp.toPx(), center)
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Distance pill
+// Dimension label
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Distance readout at the measurement midpoint.
+ * A dimension written next to its edge.
  *
  * Confidence-Forward treatment (execution.md → "Default AR variation = 1c"):
  * the tolerance sits directly under the value in the grade's colour, so the
@@ -264,33 +295,38 @@ private fun MeasurementCanvas(
  * accuracy indicator elsewhere on screen.
  */
 @Composable
-private fun DistancePill(
-    text: String,
-    tolerance: String?,
-    grade: AccuracyGrade?,
+private fun DimensionLabel(
+    label: OverlayLabel,
+    unitSystem: UnitSystem,
+    prominent: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Surface(
-        modifier  = modifier,
-        shape     = RoundedCornerShape(8.dp),
-        color     = InkBackground.copy(alpha = 0.82f),
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = InkBackground.copy(alpha = 0.82f),
         tonalElevation = 0.dp,
     ) {
         Column(
-            modifier            = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(
+                horizontal = if (prominent) 12.dp else 8.dp,
+                vertical = if (prominent) 6.dp else 3.dp,
+            ),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text      = text,
-                style     = TapeMeasurement.Medium,
-                color     = AmberTop,
+                text = unitSystem.format(label.quantity, label.value),
+                style = if (prominent) TapeMeasurement.Medium else TapeMeasurement.Small,
+                color = AmberTop,
                 textAlign = TextAlign.Center,
             )
-            if (tolerance != null) {
+            // Several labels crowd each other, and the readings table already
+            // carries every tolerance, so only a lone label repeats its own.
+            if (prominent && label.tolerance != null) {
                 Text(
-                    text      = tolerance,
-                    style     = MaterialTheme.typography.bodySmall,
-                    color     = grade.tint(),
+                    text = "±" + unitSystem.format(label.quantity, label.tolerance, reference = label.value),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = label.grade.tint(),
                     textAlign = TextAlign.Center,
                 )
             }
@@ -298,60 +334,73 @@ private fun DistancePill(
     }
 }
 
-/** Maps an accuracy grade to its badge colour. Null / unknown reads as muted. */
-@Composable
-private fun AccuracyGrade?.tint(): Color = when (this) {
+/** Maps an accuracy grade to its badge colour. */
+private fun AccuracyGrade.tint(): Color = when (this) {
     AccuracyGrade.HIGH        -> ConfidenceHigh
     AccuracyGrade.FAIR        -> ConfidenceMedium
     AccuracyGrade.LOW         -> ConfidenceLow
     AccuracyGrade.UNAVAILABLE -> ConfidenceLow
-    AccuracyGrade.UNKNOWN,
-    null                      -> Color.White.copy(alpha = 0.6f)
+    AccuracyGrade.UNKNOWN     -> Color.White.copy(alpha = 0.6f)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Top HUD: confidence badge + unit chip + nav icons
+// Top HUD: accuracy badge + unit chip + nav icons
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun TopHud(
-    confidence:           TrackingConfidence,
-    accuracy:             AccuracyEstimate?,
-    unitSystem:           UnitSystem,
-    currentUnitLabel:     String,
-    onUnitTap:            () -> Unit,
-    onNavigateToSaved:    () -> Unit,
+    confidence: TrackingConfidence,
+    accuracy: ShapeAccuracy?,
+    readings: List<Reading>,
+    unitSystem: UnitSystem,
+    simulated: Boolean,
+    onUnitTap: () -> Unit,
+    onNavigateToSaved: () -> Unit,
     onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier              = modifier,
+        modifier = modifier,
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment     = Alignment.Top,
+        verticalAlignment = Alignment.Top,
     ) {
-        // Confidence badge (left)
-        ConfidenceBadge(
-            confidence = confidence,
-            accuracy   = accuracy,
-            unitSystem = unitSystem,
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            ConfidenceBadge(
+                confidence = confidence,
+                accuracy = accuracy,
+                // With one figure the badge can carry its tolerance; with
+                // several, each figure shows its own in the table.
+                detail = readings.singleOrNull()?.formatTolerance(unitSystem),
+            )
+            if (simulated) {
+                Text(
+                    text = "Practice room. These are not real measurements.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.75f),
+                    modifier = Modifier
+                        .widthIn(max = 200.dp)
+                        .background(InkBackground.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
 
         // Unit chip + nav icons (right)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            UnitChip(label = currentUnitLabel, onClick = onUnitTap)
+            Chip(label = unitSystem.label(), selected = false, onClick = onUnitTap)
             Spacer(Modifier.width(4.dp))
             IconButton(onClick = onNavigateToSaved) {
                 Icon(
-                    imageVector        = Icons.Outlined.List,
+                    imageVector = Icons.Outlined.List,
                     contentDescription = "Saved measurements",
-                    tint               = Color.White.copy(alpha = 0.8f),
+                    tint = Color.White.copy(alpha = 0.8f),
                 )
             }
             IconButton(onClick = onNavigateToSettings) {
                 Icon(
-                    imageVector        = Icons.Outlined.Settings,
+                    imageVector = Icons.Outlined.Settings,
                     contentDescription = "Settings",
-                    tint               = Color.White.copy(alpha = 0.8f),
+                    tint = Color.White.copy(alpha = 0.8f),
                 )
             }
         }
@@ -359,49 +408,32 @@ private fun TopHud(
 }
 
 /**
- * Session-tracking badge.
- *
- * Before both points are placed it reports session tracking only. Once a
- * measurement exists it reports the READING's grade and real tolerance instead,
- * because that is what the user is actually deciding on.
- *
- * It no longer prints a fixed "±1 cm" — every figure here comes from
- * AccuracyEngine and moves with distance, placement range and tracking state.
+ * Before there is a reading the badge reports session tracking only. Once a
+ * shape has one it reports the SHAPE's grade instead, because that is what the
+ * user is actually deciding on.
  */
 @Composable
 private fun ConfidenceBadge(
     confidence: TrackingConfidence,
-    accuracy: AccuracyEstimate?,
-    unitSystem: UnitSystem,
+    accuracy: ShapeAccuracy?,
+    detail: String?,
     modifier: Modifier = Modifier,
 ) {
-    val hasReading = accuracy != null
-
-    val dotColor = if (hasReading) {
-        accuracy!!.grade.tint()
-    } else {
-        when (confidence) {
-            TrackingConfidence.HIGH         -> ConfidenceHigh
-            TrackingConfidence.LOW          -> ConfidenceMedium
-            TrackingConfidence.NOT_TRACKING -> ConfidenceLow
-        }
+    val dotColor = accuracy?.grade?.tint() ?: when (confidence) {
+        TrackingConfidence.HIGH         -> ConfidenceHigh
+        TrackingConfidence.LOW          -> ConfidenceMedium
+        TrackingConfidence.NOT_TRACKING -> ConfidenceLow
     }
-
-    val title = if (hasReading) accuracy!!.grade.label() else confidence.label()
-
-    // Secondary line: the real tolerance when we have one, otherwise nothing.
-    // Deliberately blank rather than a placeholder — we don't fill space with
-    // a number we haven't earned.
-    val detail = accuracy?.formatTolerance(unitSystem)
+    val title = accuracy?.grade?.label() ?: confidence.label()
 
     Surface(
-        modifier       = modifier.widthIn(max = 220.dp),
-        shape          = RoundedCornerShape(20.dp),
-        color          = InkBackground.copy(alpha = 0.72f),
+        modifier = modifier.widthIn(max = 220.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = InkBackground.copy(alpha = 0.72f),
         tonalElevation = 0.dp,
     ) {
         Row(
-            modifier          = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -412,13 +444,15 @@ private fun ConfidenceBadge(
             Spacer(Modifier.width(6.dp))
             Column {
                 Text(
-                    text  = title,
+                    text = title,
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White,
                 )
+                // Deliberately absent rather than a placeholder — we don't fill
+                // space with a number we haven't earned.
                 if (detail != null) {
                     Text(
-                        text  = detail,
+                        text = detail,
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontSize = MaterialTheme.typography.bodySmall.fontSize * 0.85f,
                         ),
@@ -431,117 +465,196 @@ private fun ConfidenceBadge(
 }
 
 @Composable
-private fun UnitChip(
-    label:   String,
+private fun Chip(
+    label: String,
+    selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
-        modifier  = modifier,
-        shape     = RoundedCornerShape(20.dp),
-        color     = InkBackground.copy(alpha = 0.72f),
-        onClick   = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = if (selected) AmberBottom else InkBackground.copy(alpha = 0.72f),
+        onClick = onClick,
     ) {
         Text(
-            text     = label,
-            style    = MaterialTheme.typography.labelLarge,
-            color    = AmberTop,
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) InkBackground else AmberTop,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
         )
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bottom controls: hint text, Reset, Save
+// Bottom controls: hint, readings, tool picker, actions
 // ─────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun BottomControls(
-    phase:    MeasurePhase,
-    isSaving: Boolean,
-    accuracy: AccuracyEstimate?,
-    onReset:  () -> Unit,
-    onSave:   () -> Unit,
+    uiState: MeasureUiState,
+    onSelectTool: (MeasureTool) -> Unit,
+    onUndo: () -> Unit,
+    onReset: () -> Unit,
+    onFinish: () -> Unit,
+    onSave: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier              = modifier,
-        horizontalAlignment   = Alignment.CenterHorizontally,
-        verticalArrangement   = Arrangement.spacedBy(12.dp),
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Once a reading exists, the accuracy explanation replaces the generic
-        // hint — it's strictly more useful and tells the user what to change.
-        val hint = accuracy?.reason ?: when (phase) {
-            MeasurePhase.IDLE    -> "Point at a flat surface, then tap to place the first point."
-            MeasurePhase.POINT_A -> "First point set. Tap to place the second point."
-            MeasurePhase.BOTH    -> "Tap anywhere to start a new measurement."
+        if (uiState.hint.isNotEmpty()) {
+            Text(
+                text = uiState.hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.75f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .padding(horizontal = 24.dp)
+                    .background(InkBackground.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
         }
-        Text(
-            text      = hint,
-            style     = MaterialTheme.typography.bodySmall,
-            color     = Color.White.copy(alpha = 0.75f),
-            textAlign = TextAlign.Center,
-            modifier  = Modifier
-                .background(InkBackground.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        )
 
-        // Reset + Save only appear once both points are placed
+        // A lone figure on a lone edge is already written beside it; anything
+        // else needs the table, or its headline would appear nowhere.
+        if (uiState.readings.isNotEmpty() && !uiState.headlineOnLabel) {
+            ReadingsCard(
+                readings = uiState.readings,
+                unitSystem = uiState.unitSystem,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MeasureTool.entries.forEach { tool ->
+                Chip(
+                    label = tool.label,
+                    selected = tool == uiState.tool,
+                    onClick = { onSelectTool(tool) },
+                )
+            }
+        }
+
         AnimatedVisibility(
-            visible = phase == MeasurePhase.BOTH,
-            enter   = fadeIn(),
-            exit    = fadeOut(),
+            visible = uiState.canUndo,
+            enter = fadeIn(),
+            exit = fadeOut(),
         ) {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
             ) {
-                // Reset button
-                Button(
-                    onClick = onReset,
-                    modifier = Modifier.weight(1f),
-                    shape    = MaterialTheme.shapes.medium,
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-                        contentColor   = MaterialTheme.colorScheme.onSurface,
-                    ),
-                ) {
-                    Icon(
-                        imageVector        = Icons.Outlined.Refresh,
-                        contentDescription = null,
-                        modifier           = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Reset", style = MaterialTheme.typography.labelLarge)
+                ActionButton("Undo", Icons.AutoMirrored.Outlined.Undo, onUndo, Modifier.weight(1f))
+                ActionButton("Reset", Icons.Outlined.Refresh, onReset, Modifier.weight(1f))
+                if (uiState.canFinish) {
+                    ActionButton("Done", Icons.Outlined.Check, onFinish, Modifier.weight(1f), primary = true)
                 }
-
-                // Save is blocked while the error can't be bounded: persisting a
-                // distance with no verifiable tolerance would put an unqualified
-                // number in the saved list.
-                val canSave = accuracy != null &&
-                    accuracy.grade != AccuracyGrade.UNAVAILABLE
-                Button(
-                    onClick  = onSave,
-                    enabled  = !isSaving && canSave,
-                    modifier = Modifier.weight(1f),
-                    shape    = MaterialTheme.shapes.medium,
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor = AmberBottom,
-                        contentColor   = InkBackground,
-                    ),
-                ) {
-                    Icon(
-                        imageVector        = Icons.Outlined.Bookmark,
-                        contentDescription = null,
-                        modifier           = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text  = if (isSaving) "Saving…" else "Save",
-                        style = MaterialTheme.typography.labelLarge,
+                // Save is blocked while the error can't be bounded: persisting
+                // a figure with no verifiable tolerance would put an
+                // unqualified number in the saved list.
+                if (uiState.isComplete) {
+                    ActionButton(
+                        text = when {
+                            uiState.isSaving -> "Saving…"
+                            uiState.isSaved  -> "Saved"
+                            else             -> "Save"
+                        },
+                        icon = Icons.Outlined.Bookmark,
+                        onClick = onSave,
+                        modifier = Modifier.weight(1f),
+                        primary = true,
+                        enabled = uiState.canSave && !uiState.isSaving && !uiState.isSaved,
                     )
                 }
             }
         }
+    }
+}
+
+/** Every figure the shape reports, each with its own error bound. */
+@Composable
+private fun ReadingsCard(
+    readings: List<Reading>,
+    unitSystem: UnitSystem,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = InkBackground.copy(alpha = 0.82f),
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            readings.forEachIndexed { index, reading ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = reading.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = reading.formatValue(unitSystem),
+                        // The headline figure leads; the rest support it.
+                        style = TapeMeasurement.Small,
+                        color = if (index == 0) AmberTop else Color.White,
+                    )
+                    Text(
+                        text = reading.formatTolerance(unitSystem) ?: "can't verify",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = reading.grade.tint(),
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.width(96.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionButton(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    primary: Boolean = false,
+    enabled: Boolean = true,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        contentPadding = ButtonDefaults.TextButtonContentPadding,
+        colors = if (primary) {
+            ButtonDefaults.buttonColors(containerColor = AmberBottom, contentColor = InkBackground)
+        } else {
+            ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            )
+        },
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1)
     }
 }

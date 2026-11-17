@@ -1,10 +1,7 @@
 package com.tape.measure.domain.accuracy
 
 import com.tape.measure.domain.model.AccuracyGrade
-import com.tape.measure.domain.model.UnitSystem
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -75,17 +72,6 @@ class AccuracyEngineTest {
             AccuracyGrade.UNAVAILABLE,
             AccuracyEngine.estimate(input(distance = 0f)).grade,
         )
-    }
-
-    @Test
-    fun `unavailable estimate formats to null rather than a fake number`() {
-        val result = AccuracyEngine.estimate(input(cameraTracking = false))
-
-        assertNull(
-            "an unbounded estimate must not render a tolerance string",
-            result.formatTolerance(UnitSystem.CM),
-        )
-        assertNull(result.formatRelative())
     }
 
     // ── The old hardcoded lie must not reappear ──────────────────────────────
@@ -327,24 +313,5 @@ class AccuracyEngineTest {
             farAway.reason.contains("closer", ignoreCase = true) ||
                 farAway.reason.contains("from the camera", ignoreCase = true),
         )
-    }
-
-    // ── Formatting ───────────────────────────────────────────────────────────
-
-    @Test
-    fun `tolerance formats with a plus-minus sign in the active unit`() {
-        val result = AccuracyEngine.estimate(input(distance = 2f))
-        val formatted = result.formatTolerance(UnitSystem.CM)
-
-        assertNotNull(formatted)
-        assertTrue("expected a ± prefix, got: $formatted", formatted!!.startsWith("±"))
-        assertTrue("expected cm units, got: $formatted", formatted.contains("cm"))
-    }
-
-    @Test
-    fun `relative error formats as a whole percentage`() {
-        val result = AccuracyEngine.estimate(input(distance = 2f))
-
-        assertTrue(result.formatRelative()!!.endsWith("%"))
     }
 }

@@ -31,6 +31,36 @@ tape. "92% confident" is not.
 
 ---
 
+## 1a. Trying the shape tools on a Mac emulator
+
+ARCore cannot run on the Android emulator on an Apple-silicon Mac, so the emulator shows the
+**practice room**: a simulated room with a crate (60 × 40 × 35 cm), a drum (⌀ 40 cm, 50 cm
+tall), a door outline (90 × 200 cm) and a rug outline (120 × 80 cm).
+
+```bash
+# boot the emulator (leave this running)
+/opt/homebrew/share/android-commandlinetools/emulator/emulator -avd tape_pixel &
+
+# build and install
+./gradlew installDebug
+```
+
+In the app: **Continue → Allow camera access → Try the practice room**.
+
+| Gesture | Does |
+|---|---|
+| Drag anywhere | Turn the phone |
+| Arrow pad (top right) | Walk; the two lower buttons raise or lower the phone |
+| Tap anywhere | Place a point where the centre reticle is |
+| Tool chips (bottom) | Pick a tool; scroll them sideways for Circle, Box, Cylinder |
+
+To measure the crate with **Box**: tap three corners of its top face, then drag down until
+the reticle is at the bottom of a side face, and tap. Expect about 0.084 m³ (3.0 ft³).
+
+The room's numbers are simulated. They check the app's maths and flow, not the phone.
+
+---
+
 ## 2. The error model (what you need to know to test it)
 
 ```

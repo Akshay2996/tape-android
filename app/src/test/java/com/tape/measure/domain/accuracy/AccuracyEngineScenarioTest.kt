@@ -2,6 +2,7 @@ package com.tape.measure.domain.accuracy
 
 import com.tape.measure.domain.model.UnitSystem
 import org.junit.Test
+import kotlin.math.roundToInt
 
 /**
  * Not an assertion suite — a readable dump of what the engine actually claims in
@@ -72,8 +73,8 @@ class AccuracyEngineScenarioTest {
                 "%-46s %9s %9s %6s %6s".format(
                     name.take(46),
                     UnitSystem.CM.format(input.distanceMeters),
-                    r.formatTolerance(UnitSystem.CM) ?: "—",
-                    r.formatRelative() ?: "—",
+                    if (r.grade.hasTolerance) "±" + UnitSystem.CM.format(r.toleranceMeters) else "—",
+                    if (r.grade.hasTolerance) "${(r.relative * 100f).roundToInt()}%" else "—",
                     r.grade.name,
                 )
             )

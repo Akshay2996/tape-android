@@ -1,7 +1,5 @@
 package com.tape.measure.domain.model
 
-import kotlin.math.roundToInt
-
 /**
  * How much we trust a measurement, expressed as a tolerance rather than a
  * confidence percentage.
@@ -63,8 +61,8 @@ enum class AccuracyGrade {
  * [toleranceMeters] is a ± half-width: a reading of 1.40 m with a tolerance of
  * 0.03 m means we believe the true value lies in [1.37, 1.43].
  *
- * [relative] is [toleranceMeters] / distance, retained so the UI can show a
- * percentage alongside the absolute figure without recomputing it.
+ * [relative] is [toleranceMeters] / distance. It is what the grade is decided
+ * on, and what error propagation into areas and volumes works from.
  *
  * [reason] is a plain-language sentence explaining the dominant error source.
  * It is always non-empty — if we can't explain it, we shouldn't claim it.
@@ -75,17 +73,6 @@ data class AccuracyEstimate(
     val relative: Float,
     val reason: String,
 ) {
-    /**
-     * Formats the tolerance in [unit], e.g. "±3.0 cm".
-     * Returns null when there is no defensible number to show.
-     */
-    fun formatTolerance(unit: UnitSystem): String? =
-        if (grade.hasTolerance) "±" + unit.format(toleranceMeters) else null
-
-    /** Formats the relative error as a whole percentage, e.g. "2%". */
-    fun formatRelative(): String? =
-        if (grade.hasTolerance) "${(relative * 100f).roundToInt()}%" else null
-
     companion object {
         /**
          * Used when anchors aren't tracking or no measurement exists.

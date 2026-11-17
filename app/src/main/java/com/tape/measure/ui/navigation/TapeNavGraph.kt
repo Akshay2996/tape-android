@@ -5,6 +5,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.toRoute
 import com.tape.measure.ui.screens.measure.MeasureScreen
 import com.tape.measure.ui.screens.permission.PermissionScreen
 import com.tape.measure.ui.screens.saved.SavedListScreen
@@ -17,7 +18,7 @@ import com.tape.measure.ui.screens.welcome.WelcomeScreen
  *
  * Flow:
  *  Welcome → Permission → Measure  (happy path)
- *                       ↘ Unsupported  (no ARCore / denied)
+ *                       ↘ Unsupported → Measure in the practice room
  *  Measure → Saved
  *  Measure / Saved → Settings
  *
@@ -44,7 +45,7 @@ fun TapeNavGraph(
         composable<Route.Permission> {
             PermissionScreen(
                 onPermissionGranted = {
-                    navController.navigate(Route.Measure) {
+                    navController.navigate(Route.Measure()) {
                         // Remove the permission screen from back-stack so back
                         // from Measure goes to Welcome, not back to Permission.
                         popUpTo<Route.Permission> { inclusive = true }
@@ -61,11 +62,17 @@ fun TapeNavGraph(
         composable<Route.Unsupported> {
             UnsupportedScreen(
                 onBack = { navController.popBackStack() },
+                onTryPracticeRoom = {
+                    navController.navigate(Route.Measure(simulated = true)) {
+                        popUpTo<Route.Unsupported> { inclusive = true }
+                    }
+                },
             )
         }
 
-        composable<Route.Measure> {
+        composable<Route.Measure> { entry ->
             MeasureScreen(
+                simulated = entry.toRoute<Route.Measure>().simulated,
                 onNavigateToSaved = { navController.navigate(Route.Saved) },
                 onNavigateToSettings = { navController.navigate(Route.Settings) },
                 onDeviceUnsupported = {

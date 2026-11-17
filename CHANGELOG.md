@@ -13,6 +13,36 @@ user-trust changes, not just features.
 
 ## [Unreleased]
 
+**Shape tools.** Tape measures objects, not only distances. See
+`.hermes/plans/2026-11-16-shape-tools.md`.
+
+### ⚠️ Accuracy claims changed
+- Areas, volumes, circumferences and angles now carry tolerances derived from the spans
+  they are built from (first-order propagation, in quadrature). A height set by tilting the
+  phone is graded as an off-plane point, because nothing was tapped there.
+
+### Added
+- Eight tools: Line, Path, Area, Angle, Height, Circle, Box, Cylinder.
+- Aim-then-tap: points go under the centre reticle, with a live preview before each tap.
+- Height step: tilt the phone to raise a base into a box, cylinder or height.
+- Undo, Reset and Done (closes a path or area, keeps a box or cylinder flat).
+- ARCore Depth API, where the device supports it, so points can land on objects and not
+  only on large planes.
+- Practice room: a simulated room of known sizes, offered when ARCore can't run (including
+  the Android emulator on Apple-silicon Macs). Saves from it are labelled "Practice room".
+- 52 new unit tests (70 in total), 16 of them measuring the practice room end to end.
+
+### Changed
+- Schema v2 → v3 adds `kind` and `readings`; existing rows stay lines and are not back-filled.
+- The ARCore availability check waits for a final answer instead of treating "still
+  checking" as "unsupported".
+- `CLAUDE.md` moved to the repo root, where Claude Code loads it, and now imports
+  `.hermes.md` instead of duplicating it.
+
+### Removed
+- Dead code: empty `rename()`, unused `justSaved` flag, unused tokens and colours, the
+  placeholder test, five unused test dependencies, duplicate root HTML prototypes.
+
 ### Planned
 - Tablet / landscape layout (v1 scope item 8)
 - Share measurement as image (v1 scope item 5, partial)

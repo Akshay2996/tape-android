@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.tape.measure.ui.components.AmberCtaButton
 import com.tape.measure.ui.components.BrandMark
 import com.tape.measure.ui.theme.ConfidenceLow
 import com.tape.measure.ui.theme.TapeTheme
@@ -34,12 +35,13 @@ import com.tape.measure.ui.theme.TapeTheme
  *  - ARCore is not available / not supported on this device
  *  - The ARCore session fails to initialize in MeasureScreen
  *
- * Tells the user clearly why Tape can't work and lets them go back
- * (or close the app).
+ * Tells the user clearly why Tape can't measure here, and offers the practice
+ * room so the tools can still be tried.
  */
 @Composable
 fun UnsupportedScreen(
     onBack: () -> Unit,
+    onTryPracticeRoom: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -91,8 +93,18 @@ fun UnsupportedScreen(
                 )
             }
 
-            // Back action
+            // Actions
             Column {
+                Text(
+                    text = "You can still try every tool in a simulated room. Its numbers are not real measurements.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                AmberCtaButton(text = "Try the practice room", onClick = onTryPracticeRoom)
+                Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = onBack,
                     modifier = Modifier
@@ -119,6 +131,6 @@ fun UnsupportedScreen(
 @Composable
 private fun UnsupportedScreenPreview() {
     TapeTheme(darkTheme = true) {
-        UnsupportedScreen(onBack = {})
+        UnsupportedScreen(onBack = {}, onTryPracticeRoom = {})
     }
 }

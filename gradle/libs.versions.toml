@@ -16,6 +16,7 @@ coroutines = "1.9.0"                # Explicit coroutines (pulled transitively b
 datastore = "1.1.1"                 # User preferences (unit, theme)
 junit = "4.13.2"                    # unit tests
 junitExt = "1.2.1"                  # AndroidX test core
+testRunner = "1.6.1"                # AndroidJUnitRunner for instrumented tests
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -44,6 +45,7 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitExt" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "testRunner" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

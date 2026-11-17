@@ -60,7 +60,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tape.measure.data.db.MeasurementEntity
+import com.tape.measure.data.db.ReadingsJson
 import com.tape.measure.domain.model.AccuracyGrade
+import com.tape.measure.domain.model.UnitSystem
+import com.tape.measure.domain.shape.MeasureTool
+import com.tape.measure.domain.shape.Quantity
+import com.tape.measure.domain.shape.Reading
+import com.tape.measure.domain.shape.formatTolerance
+import com.tape.measure.domain.shape.formatValue
 import com.tape.measure.ui.theme.ConfidenceHigh
 import com.tape.measure.ui.theme.ConfidenceLow
 import com.tape.measure.ui.theme.ConfidenceMedium
@@ -107,18 +114,7 @@ fun SavedListScreen(
                     icon = Icons.Outlined.Share,
                     label = "Share",
                     onClick = {
-                        // Share the tolerance alongside the value. A number sent
-                        // to someone else without its error bound is the same
-                        // overclaim Tape exists to avoid — it just travels further.
-                        val text = buildString {
-                            entity.label?.let { append(it).append(": ") }
-                            append(uiState.unitSystem.format(entity.distanceMeters))
-                            if (AccuracyGrade.parse(entity.accuracyGrade).hasTolerance) {
-                                append(" ±")
-                                append(uiState.unitSystem.format(entity.toleranceMeters))
-                            }
-                            append("\nMeasured with Tape")
-                        }
+                        val text = shareText(entity, uiState.unitSystem)
                         val intent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
                             putExtra(Intent.EXTRA_TEXT, text)
@@ -244,16 +240,10 @@ fun SavedListScreen(
         ) {
             LazyColumn {
                 items(uiState.measurements, key = { it.id }) { entity ->
-                    val grade = AccuracyGrade.parse(entity.accuracyGrade)
                     MeasurementCard(
                         entity = entity,
-                        formattedValue = uiState.unitSystem.format(entity.distanceMeters),
-                        formattedTolerance = if (grade.hasTolerance) {
-                            "±" + uiState.unitSystem.format(entity.toleranceMeters)
-                        } else {
-                            null
-                        },
-                        grade = grade,
+                        readings = remember(entity) { entity.readingsOrLength() },
+                        unitSystem = uiState.unitSystem,
                         onLongPress = { selectedEntity = entity },
                     )
                     HorizontalDivider(
@@ -270,9 +260,8 @@ fun SavedListScreen(
 @Composable
 private fun MeasurementCard(
     entity: MeasurementEntity,
-    formattedValue: String,
-    formattedTolerance: String?,
-    grade: AccuracyGrade,
+    readings: List<Reading>,
+    unitSystem: UnitSystem,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -283,6 +272,11 @@ private fun MeasurementCard(
             DateUtils.MINUTE_IN_MILLIS,
         ).toString()
     }
+    // The headline figure goes in the chip; anything else the shape measured
+    // is listed under the label.
+    val headline = readings.first()
+    val formattedTolerance = headline.formatTolerance(unitSystem)
+    val tool = MeasureTool.parse(entity.kind)
 
     Surface(
         modifier = modifier
@@ -307,10 +301,20 @@ private fun MeasurementCard(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = relativeTime,
+                    text = if (tool == MeasureTool.LINE) relativeTime else "${tool.label} · $relativeTime",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (readings.size > 1) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = readings.drop(1).joinToString(" · ") {
+                            "${it.name} ${it.formatValue(unitSystem)}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Spacer(Modifier.width(12.dp))
             Column(horizontalAlignment = Alignment.End) {
@@ -319,7 +323,7 @@ private fun MeasurementCard(
                     color = MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Text(
-                        text = formattedValue,
+                        text = headline.formatValue(unitSystem),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -332,9 +336,9 @@ private fun MeasurementCard(
                     Text(
                         text = formattedTolerance,
                         style = MaterialTheme.typography.bodySmall,
-                        color = gradeTint(grade),
+                        color = gradeTint(headline.grade),
                     )
-                } else if (grade == AccuracyGrade.UNKNOWN) {
+                } else if (headline.grade == AccuracyGrade.UNKNOWN) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         text = "accuracy not recorded",
@@ -344,6 +348,46 @@ private fun MeasurementCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * What a saved row measured. Rows saved before shapes existed hold a single
+ * length in their own columns; reading them the same way keeps one code path.
+ */
+private fun MeasurementEntity.readingsOrLength(): List<Reading> =
+    ReadingsJson.decode(readings).ifEmpty {
+        val grade = AccuracyGrade.parse(accuracyGrade)
+        listOf(
+            Reading(
+                name = "Length",
+                quantity = Quantity.LENGTH,
+                value = distanceMeters,
+                tolerance = toleranceMeters.takeIf { grade.hasTolerance },
+                grade = grade,
+            )
+        )
+    }
+
+/**
+ * Every figure goes out with its tolerance. A number sent to someone else
+ * without its error bound is the same overclaim Tape exists to avoid — it
+ * just travels further.
+ */
+private fun shareText(entity: MeasurementEntity, unitSystem: UnitSystem): String {
+    val readings = entity.readingsOrLength()
+    fun Reading.withTolerance() =
+        listOfNotNull(formatValue(unitSystem), formatTolerance(unitSystem)).joinToString(" ")
+
+    return buildString {
+        if (readings.size == 1) {
+            entity.label?.let { append(it).append(": ") }
+            append(readings.single().withTolerance())
+        } else {
+            append(entity.label ?: MeasureTool.parse(entity.kind).label)
+            readings.forEach { append("\n").append(it.name).append(" ").append(it.withTolerance()) }
+        }
+        append("\nMeasured with Tape")
     }
 }
 

@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [MeasurementEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class TapeDatabase : RoomDatabase() {
@@ -58,6 +58,23 @@ abstract class TapeDatabase : RoomDatabase() {
                 )
                 db.execSQL("DROP TABLE measurements")
                 db.execSQL("ALTER TABLE measurements_new RENAME TO measurements")
+            }
+        }
+
+        /**
+         * v2 → v3: saved measurements can be shapes, not only lines.
+         *
+         * `kind` names the tool; `readings` holds every figure the shape
+         * reported. Existing rows are all lines: they get kind LINE and no
+         * readings, and keep displaying from their length columns.
+         *
+         * Plain ADD COLUMN works on every SQLite Android has shipped, so no
+         * table rebuild is needed here.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE measurements ADD COLUMN kind TEXT NOT NULL DEFAULT 'LINE'")
+                db.execSQL("ALTER TABLE measurements ADD COLUMN readings TEXT")
             }
         }
     }

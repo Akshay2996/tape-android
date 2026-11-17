@@ -90,13 +90,6 @@ val TapeTypography = Typography(
  * a real tape measure: fixed-width, industrial.
  */
 object TapeMeasurement {
-    val Large: TextStyle = TextStyle(
-        fontFamily    = PlexMono,
-        fontWeight    = FontWeight.Medium,
-        fontSize      = 56.sp,
-        lineHeight    = 64.sp,
-        letterSpacing = (-1).sp,
-    )
     val Medium: TextStyle = TextStyle(
         fontFamily = PlexMono,
         fontWeight = FontWeight.Medium,

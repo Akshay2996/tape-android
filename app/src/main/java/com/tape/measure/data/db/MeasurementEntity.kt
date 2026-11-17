@@ -1,5 +1,6 @@
 package com.tape.measure.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -18,12 +19,26 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "measurements")
 data class MeasurementEntity(
     @PrimaryKey val id: String,
+    /**
+     * The shape's main length in metres: the line itself, a path's total, a
+     * box's length. 0 for a shape with no length at all (an angle).
+     */
     val distanceMeters: Float,
     val unit: String,
     val label: String?,
-    /** ± half-width of the error bound, in metres. 0 for legacy rows. */
+    /** ± half-width of the error bound on [distanceMeters]. 0 for legacy rows. */
     val toleranceMeters: Float,
-    /** Name of a [com.tape.measure.domain.model.AccuracyGrade] value. */
+    /**
+     * Name of a [com.tape.measure.domain.model.AccuracyGrade] value: how far
+     * the measurement as a whole can be trusted.
+     */
     val accuracyGrade: String,
     val createdAt: Long,
+    /** Name of the [com.tape.measure.domain.shape.MeasureTool] used. Added in schema v3. */
+    @ColumnInfo(defaultValue = "LINE") val kind: String = "LINE",
+    /**
+     * Every figure the shape reported, as JSON (see [ReadingsJson]), headline
+     * first. Null for rows saved before schema v3, which only ever held a line.
+     */
+    val readings: String? = null,
 )

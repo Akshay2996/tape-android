@@ -21,15 +21,18 @@ sealed interface Route {
      */
     @Serializable data object Permission : Route
 
-    /** Shown when the device cannot run ARCore (no depth sensor / old chipset). */
+    /** Shown when ARCore can't run here. Offers the practice room instead. */
     @Serializable data object Unsupported : Route
 
-    /** Core AR measurement screen. */
-    @Serializable data object Measure : Route
+    /**
+     * The measurement screen. [simulated] measures the practice room instead
+     * of the camera feed, for where ARCore can't run.
+     */
+    @Serializable data class Measure(val simulated: Boolean = false) : Route
 
-    /** List of saved measurements (Room-backed). Stub for now. */
+    /** List of saved measurements (Room-backed). */
     @Serializable data object Saved : Route
 
-    /** App settings: default unit, theme, about. Stub for now. */
+    /** App settings: default unit, theme, about. */
     @Serializable data object Settings : Route
 }

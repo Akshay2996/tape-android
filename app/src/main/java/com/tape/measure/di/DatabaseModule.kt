@@ -23,7 +23,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): TapeDatabase =
         Room.databaseBuilder(context, TapeDatabase::class.java, "tape_db")
-            .addMigrations(TapeDatabase.MIGRATION_1_2)
+            .addMigrations(TapeDatabase.MIGRATION_1_2, TapeDatabase.MIGRATION_2_3)
             .build()
 
     @Provides

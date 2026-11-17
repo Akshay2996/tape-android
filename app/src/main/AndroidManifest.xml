@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Required for ARCore (camera access). Declared now; requested at runtime in v1.0+. -->
+    <!-- Required for ARCore (camera access). Requested at runtime by PermissionScreen. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- ARCore is required hardware for v1's AR measurement. -->
+    <!-- AR is optional: without it the app still installs and offers the practice room. -->
     <uses-feature
         android:name="android.hardware.camera.ar"
         android:required="false" />
@@ -12,7 +12,6 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
-    <!-- Apps that use ARCore must declare the meta-data tag. -->
     <application
         android:name=".TapeApplication"
         android:allowBackup="false"
@@ -24,6 +23,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Tape">
 
+        <!-- Apps that use ARCore must declare this tag. -->
         <meta-data
             android:name="com.google.ar.core"
             android:value="optional" />

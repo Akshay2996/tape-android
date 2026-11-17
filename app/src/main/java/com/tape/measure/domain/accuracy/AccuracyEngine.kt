@@ -161,14 +161,8 @@ object AccuracyEngine {
         // the displayed % and the displayed ± always agree with each other.
         val effectiveRel = toleranceMeters / input.distanceMeters
 
-        val grade = when {
-            effectiveRel <= HIGH_THRESHOLD -> AccuracyGrade.HIGH
-            effectiveRel <= FAIR_THRESHOLD -> AccuracyGrade.FAIR
-            else                           -> AccuracyGrade.LOW
-        }
-
         return AccuracyEstimate(
-            grade           = grade,
+            grade           = gradeFor(effectiveRel),
             toleranceMeters = toleranceMeters,
             relative        = effectiveRel,
             reason          = buildReason(
@@ -178,6 +172,13 @@ object AccuracyEngine {
                 placementRel = placementRel,
             ),
         )
+    }
+
+    /** The grade for a tolerance that is [relative] of the value it bounds. */
+    fun gradeFor(relative: Float): AccuracyGrade = when {
+        relative <= HIGH_THRESHOLD -> AccuracyGrade.HIGH
+        relative <= FAIR_THRESHOLD -> AccuracyGrade.FAIR
+        else                       -> AccuracyGrade.LOW
     }
 
     // ── Error terms ──────────────────────────────────────────────────────────

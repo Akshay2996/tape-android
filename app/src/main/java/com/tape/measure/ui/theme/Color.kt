@@ -5,7 +5,7 @@ import androidx.compose.ui.graphics.Color
 /**
  * Tape color tokens.
  * Locked visual direction: yellow-amber gradient on warm near-black.
- * See /Users/akshaysharma/Downloads/Work/Projects/Tape/.hermes/plans/execution.md → Visual direction.
+ * See .hermes/plans/execution.md → Visual direction.
  */
 
 // Surfaces (dark baseline)

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.google.ar.core.ArCoreApk
 import com.tape.measure.ui.components.AmberCtaButton
 import com.tape.measure.ui.components.BrandMark
+import kotlinx.coroutines.delay
 
 /**
  * Gate screen that:
@@ -55,9 +56,15 @@ fun PermissionScreen(
     val context = LocalContext.current
     var permissionDenied by remember { mutableStateOf(false) }
 
-    // Check ARCore availability exactly once when the screen enters composition.
+    // Check ARCore availability when the screen enters composition. The first
+    // answer can be "still checking" while ARCore asks Play Services; that is
+    // not a "no", so ask again until it settles.
     LaunchedEffect(Unit) {
-        val availability = ArCoreApk.getInstance().checkAvailability(context)
+        var availability = ArCoreApk.getInstance().checkAvailability(context)
+        while (availability.isTransient) {
+            delay(200)
+            availability = ArCoreApk.getInstance().checkAvailability(context)
+        }
         if (!availability.isSupported) {
             onDeviceUnsupported()
         }
