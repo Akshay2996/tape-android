@@ -110,16 +110,10 @@ fun SavedListScreen(
                         // Share the tolerance alongside the value. A number sent
                         // to someone else without its error bound is the same
                         // overclaim Tape exists to avoid — it just travels further.
-                        val grade = runCatching {
-                            AccuracyGrade.valueOf(entity.accuracyGrade)
-                        }.getOrDefault(AccuracyGrade.UNKNOWN)
-
                         val text = buildString {
                             entity.label?.let { append(it).append(": ") }
                             append(uiState.unitSystem.format(entity.distanceMeters))
-                            if (grade != AccuracyGrade.UNKNOWN &&
-                                grade != AccuracyGrade.UNAVAILABLE
-                            ) {
+                            if (AccuracyGrade.parse(entity.accuracyGrade).hasTolerance) {
                                 append(" ±")
                                 append(uiState.unitSystem.format(entity.toleranceMeters))
                             }
@@ -250,20 +244,14 @@ fun SavedListScreen(
         ) {
             LazyColumn {
                 items(uiState.measurements, key = { it.id }) { entity ->
-                    val grade = remember(entity.accuracyGrade) {
-                        runCatching { AccuracyGrade.valueOf(entity.accuracyGrade) }
-                            .getOrDefault(AccuracyGrade.UNKNOWN)
-                    }
+                    val grade = AccuracyGrade.parse(entity.accuracyGrade)
                     MeasurementCard(
                         entity = entity,
                         formattedValue = uiState.unitSystem.format(entity.distanceMeters),
-                        formattedTolerance = if (
-                            grade == AccuracyGrade.UNKNOWN ||
-                            grade == AccuracyGrade.UNAVAILABLE
-                        ) {
-                            null
-                        } else {
+                        formattedTolerance = if (grade.hasTolerance) {
                             "±" + uiState.unitSystem.format(entity.toleranceMeters)
+                        } else {
+                            null
                         },
                         grade = grade,
                         onLongPress = { selectedEntity = entity },

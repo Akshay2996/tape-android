@@ -4,30 +4,20 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.tape.measure.ui.theme.AmberBottom
-import com.tape.measure.ui.theme.AmberTop
-import com.tape.measure.ui.theme.InkBackground
-import com.tape.measure.ui.theme.InkTextSecondary
+import com.tape.measure.ui.components.AmberCtaButton
+import com.tape.measure.ui.components.BrandMark
 import com.tape.measure.ui.theme.TapeTheme
 
 /**
@@ -46,8 +36,6 @@ fun WelcomeScreen(
     onContinue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val amberGradient = Brush.horizontalGradient(listOf(AmberTop, AmberBottom))
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -81,31 +69,7 @@ fun WelcomeScreen(
 
             // Bottom: CTA + footer microcopy
             Column {
-                Button(
-                    onClick = onContinue,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AmberBottom,
-                        contentColor = InkBackground,
-                    ),
-                    contentPadding = PaddingValues(0.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(amberGradient),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "Continue",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = InkBackground,
-                        )
-                    }
-                }
+                AmberCtaButton(text = "Continue", onClick = onContinue)
                 Spacer(Modifier.height(16.dp))
                 Text(
                     text = "Next step asks for camera access — to measure what your camera sees. Frames are processed on your phone and never uploaded.",
@@ -115,23 +79,6 @@ fun WelcomeScreen(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun BrandMark() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "TAPE",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = "│││││",
-            style = MaterialTheme.typography.titleMedium,
-            color = InkTextSecondary,
-        )
     }
 }
 

@@ -11,5 +11,4 @@ object TapeShape {
     val Small = RoundedCornerShape(6.dp)        // chips, small buttons, inputs
     val Medium = RoundedCornerShape(10.dp)      // cards, sheets
     val Large = RoundedCornerShape(12.dp)       // modals, large cards
-    val Full = RoundedCornerShape(50)           // only for circular indicators (e.g. point dots)
 }

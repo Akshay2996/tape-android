@@ -4,7 +4,6 @@
 
 # ARCore — keep all public API and JNI surface
 -keep class com.google.ar.** { *; }
--keep class com.google.ar.core.** { *; }
 -dontwarn com.google.ar.**
 
 # SceneView / ARSceneView

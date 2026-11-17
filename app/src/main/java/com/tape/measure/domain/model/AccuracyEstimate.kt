@@ -45,6 +45,16 @@ enum class AccuracyGrade {
         UNAVAILABLE -> "Can't verify"
         UNKNOWN     -> "Not recorded"
     }
+
+    /** False for the two grades that have no defensible number to show. */
+    val hasTolerance: Boolean
+        get() = this != UNAVAILABLE && this != UNKNOWN
+
+    companion object {
+        /** Reads a persisted grade name; anything unrecognised is [UNKNOWN]. */
+        fun parse(name: String): AccuracyGrade =
+            entries.firstOrNull { it.name == name } ?: UNKNOWN
+    }
 }
 
 /**
@@ -70,13 +80,11 @@ data class AccuracyEstimate(
      * Returns null when there is no defensible number to show.
      */
     fun formatTolerance(unit: UnitSystem): String? =
-        if (grade == AccuracyGrade.UNAVAILABLE || grade == AccuracyGrade.UNKNOWN) null
-        else "±" + unit.format(toleranceMeters)
+        if (grade.hasTolerance) "±" + unit.format(toleranceMeters) else null
 
     /** Formats the relative error as a whole percentage, e.g. "2%". */
     fun formatRelative(): String? =
-        if (grade == AccuracyGrade.UNAVAILABLE || grade == AccuracyGrade.UNKNOWN) null
-        else "${(relative * 100f).roundToInt()}%"
+        if (grade.hasTolerance) "${(relative * 100f).roundToInt()}%" else null
 
     companion object {
         /**
@@ -88,14 +96,6 @@ data class AccuracyEstimate(
             toleranceMeters = 0f,
             relative        = 0f,
             reason          = reason,
-        )
-
-        /** Used for rows persisted before the accuracy engine shipped. */
-        val UNKNOWN: AccuracyEstimate = AccuracyEstimate(
-            grade           = AccuracyGrade.UNKNOWN,
-            toleranceMeters = 0f,
-            relative        = 0f,
-            reason          = "Saved before Tape recorded accuracy.",
         )
     }
 }

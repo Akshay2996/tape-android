@@ -30,3 +30,8 @@ release.keystore
 # Generated APKs (let CI / build scripts handle distribution)
 *.apk
 *.aab
+
+# Local-only working notes: competitor reference media, unreleased feature
+# design, anything not ready (or not ours) to publish. The rest of
+# .hermes/plans/ IS tracked and public on purpose.
+.hermes/plans/local/

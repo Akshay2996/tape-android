@@ -10,14 +10,12 @@ hilt = "2.52"                       # DI
 hiltNavigationCompose = "1.2.0"     # Hilt + Compose Navigation
 navigationCompose = "2.8.5"         # Jetpack Navigation Compose
 room = "2.7.0"                      # local DB
-kotlinxSerialization = "1.7.3"      # JSON (for future use)
+kotlinxSerialization = "1.7.3"      # @Serializable nav routes + saved-reading JSON
 arsceneview = "2.2.1"               # SceneView — Compose-friendly ARCore wrapper
 coroutines = "1.9.0"                # Explicit coroutines (pulled transitively but should be declared)
 datastore = "1.1.1"                 # User preferences (unit, theme)
-mockk = "1.13.13"                   # Unit testing mocks
 junit = "4.13.2"                    # unit tests
 junitExt = "1.2.1"                  # AndroidX test core
-espresso = "3.6.1"                  # UI tests
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -43,19 +41,14 @@ androidx-room-testing = { group = "androidx.room", name = "room-testing", versio
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 arsceneview = { group = "io.github.sceneview", name = "arsceneview", version.ref = "arsceneview" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
-kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
-mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
-mockk-android = { group = "io.mockk", name = "mockk-android", version.ref = "mockk" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitExt" }
-androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-kotlin-kapt = { id = "org.jetbrains.kotlin.kapt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }

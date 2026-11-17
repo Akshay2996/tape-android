@@ -10,8 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,11 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,15 +30,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.google.ar.core.ArCoreApk
-import com.tape.measure.ui.theme.AmberBottom
-import com.tape.measure.ui.theme.AmberTop
-import com.tape.measure.ui.theme.InkBackground
-import com.tape.measure.ui.theme.InkTextSecondary
+import com.tape.measure.ui.components.AmberCtaButton
+import com.tape.measure.ui.components.BrandMark
 
 /**
  * Gate screen that:
@@ -77,8 +69,6 @@ fun PermissionScreen(
         if (granted) onPermissionGranted() else permissionDenied = true
     }
 
-    val amberGradient = Brush.horizontalGradient(listOf(AmberTop, AmberBottom))
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -93,20 +83,7 @@ fun PermissionScreen(
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
 
-            // Brand mark (reused pattern from WelcomeScreen)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "TAPE",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "│││││",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = InkTextSecondary,
-                )
-            }
+            BrandMark()
 
             // Icon + headline + body copy
             Column(
@@ -140,7 +117,8 @@ fun PermissionScreen(
 
             // CTA button — either "Allow camera" or "Open Settings"
             Column {
-                Button(
+                AmberCtaButton(
+                    text = if (permissionDenied) "Open Settings" else "Allow camera access",
                     onClick = {
                         if (permissionDenied) {
                             // Permission was permanently denied — open app settings
@@ -152,29 +130,7 @@ fun PermissionScreen(
                             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AmberBottom,
-                        contentColor = InkBackground,
-                    ),
-                    contentPadding = PaddingValues(0.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(amberGradient),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (permissionDenied) "Open Settings" else "Allow camera access",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = InkBackground,
-                        )
-                    }
-                }
+                )
                 Spacer(Modifier.height(16.dp))
                 if (!permissionDenied) {
                     Text(
