@@ -44,6 +44,28 @@ data class Ray(val origin: Vec3, val direction: Vec3) {
 /** A point on screen, in pixels from the top-left corner. */
 data class Point2(val x: Float, val y: Float)
 
+/** A rectangle on screen, in pixels. */
+data class ScreenBox(val left: Float, val top: Float, val right: Float, val bottom: Float) {
+    fun contains(p: Point2): Boolean = p.x in left..right && p.y in top..bottom
+
+    /** Grown by [fraction] of its size on every side. */
+    fun grownBy(fraction: Float): ScreenBox {
+        val dx = (right - left) * fraction
+        val dy = (bottom - top) * fraction
+        return ScreenBox(left - dx, top - dy, right + dx, bottom + dy)
+    }
+
+    companion object {
+        /** The smallest box around [points], or null when there are none. */
+        fun around(points: List<Point2>): ScreenBox? =
+            if (points.isEmpty()) {
+                null
+            } else {
+                ScreenBox(points.minOf { it.x }, points.minOf { it.y }, points.maxOf { it.x }, points.maxOf { it.y })
+            }
+    }
+}
+
 data class Segment2(val a: Point2, val b: Point2)
 
 data class Segment3(val a: Vec3, val b: Vec3)

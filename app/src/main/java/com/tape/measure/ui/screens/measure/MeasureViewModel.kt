@@ -106,6 +106,7 @@ class MeasureViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 tool          = state.tool,
+                objectName    = state.objectName,
                 confidence    = frame.confidence(),
                 overlay       = overlay,
                 readings      = state.solution.readings,
@@ -183,7 +184,7 @@ class MeasureViewModel @Inject constructor(
      * Refuses when the accuracy is unverifiable — storing a figure whose error
      * we couldn't bound would put an unqualified number in the saved list.
      */
-    fun saveMeasurement(label: String = "") {
+    fun saveMeasurement(practice: Boolean = false) {
         val snapshot = _uiState.value
         if (!snapshot.canSave || snapshot.isSaving || snapshot.isSaved) return
         val accuracy = snapshot.accuracy ?: return
@@ -196,7 +197,11 @@ class MeasureViewModel @Inject constructor(
                     id              = UUID.randomUUID().toString(),
                     distanceMeters  = length?.value ?: 0f,
                     unit            = snapshot.unitSystem.name,
-                    label           = label.ifBlank { null },
+                    // What it is, and — so a practice reading can never pass
+                    // for a real one — where it was taken.
+                    label           = listOfNotNull(snapshot.objectName, PRACTICE_LABEL.takeIf { practice })
+                        .joinToString(" · ")
+                        .ifBlank { null },
                     toleranceMeters = length?.tolerance ?: 0f,
                     accuracyGrade   = accuracy.grade.name,
                     createdAt       = System.currentTimeMillis(),
@@ -206,6 +211,10 @@ class MeasureViewModel @Inject constructor(
             )
             _uiState.update { it.copy(isSaving = false, isSaved = true) }
         }
+    }
+
+    private companion object {
+        const val PRACTICE_LABEL = "Practice room"
     }
 
     override fun onCleared() {

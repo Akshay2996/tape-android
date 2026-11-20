@@ -30,9 +30,9 @@ import kotlin.math.abs
  */
 class PracticeRoomMeasureTest {
 
-    private class Rig {
+    private class Rig(tool: MeasureTool = MeasureTool.LINE) {
         val world = SimWorld.practiceRoom()
-        val session = MeasureSession()
+        val session = MeasureSession().apply { select(tool) }
         var camera = SimCamera.START
 
         private val width = 1080

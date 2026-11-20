@@ -1,9 +1,11 @@
 package com.tape.measure.sim
 
 import com.tape.measure.domain.accuracy.AnchorSurface
+import com.tape.measure.domain.ar.SurfacePlane
 import com.tape.measure.domain.geometry.Ray
 import com.tape.measure.domain.geometry.Segment3
 import com.tape.measure.domain.geometry.Vec3
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -27,6 +29,7 @@ class SimQuad(val centre: Vec3, val halfU: Vec3, val halfV: Vec3, val normal: Ve
  * @param yawDegrees rotation about the vertical, so the box isn't axis-aligned.
  */
 class SimBox(
+    val name: String,
     val base: Vec3,
     val length: Float,
     val width: Float,
@@ -53,16 +56,52 @@ class SimBox(
 
     /** Corners of the top face, in order around it. */
     val topCorners: List<Vec3> get() = faces[0].corners
+
+    /** All eight corners: everything the box covers lies within them. */
+    val outline: List<Vec3> get() = topCorners + topCorners.map { it - Vec3.UP * height }
 }
 
 /** An upright cylinder standing on the floor. [base] is the centre of its bottom. */
-class SimDrum(val base: Vec3, val radius: Float, val height: Float)
+class SimDrum(val name: String, val base: Vec3, val radius: Float, val height: Float) {
+    /** Points round its top and bottom rims, enough to outline it from any side. */
+    val outline: List<Vec3>
+        get() = (0 until 24).flatMap { i ->
+            val a = (2.0 * PI * i / 24).toFloat()
+            val rim = base + Vec3(cos(a), 0f, sin(a)) * radius
+            listOf(rim, rim + Vec3.UP * height)
+        }
+}
+
+/** A flat face of the room, the way ARCore would report it once detected. */
+class SimPlane(
+    override val point: Vec3,
+    override val normal: Vec3,
+    override val area: Float,
+    private val inside: (Vec3) -> Boolean,
+) : SurfacePlane {
+    override fun contains(p: Vec3): Boolean = inside(p)
+
+    companion object {
+        fun of(quad: SimQuad) = SimPlane(
+            point = quad.centre,
+            normal = quad.normal,
+            area = 4f * quad.halfU.length * quad.halfV.length,
+            inside = { p ->
+                val local = p - quad.centre
+                abs((local dot quad.halfU) / (quad.halfU dot quad.halfU)) <= 1f &&
+                    abs((local dot quad.halfV) / (quad.halfV dot quad.halfV)) <= 1f
+            },
+        )
+    }
+}
 
 class SimHit(
     val distance: Float,
     val point: Vec3,
     val normal: Vec3,
     val surface: AnchorSurface,
+    /** The box or drum hit, or null for the floor and walls. */
+    val owner: Any? = null,
 )
 
 /**
@@ -79,6 +118,28 @@ class SimWorld(
     /** Lines painted on the ground: things to measure that have no thickness. */
     val markings: List<Segment3>,
 ) {
+    /**
+     * Every flat face, as ARCore would detect them: floor and wall, the
+     * crate's top and the drum's top. Sides stay undetected, as small
+     * vertical faces usually do on a phone.
+     */
+    val planes: List<SurfacePlane> =
+        ground.map(SimPlane::of) +
+            boxes.map { SimPlane.of(it.faces[0]) } +
+            drums.map { drum ->
+                val top = drum.base + Vec3.UP * drum.height
+                SimPlane(
+                    point = top,
+                    normal = Vec3.UP,
+                    area = (Math.PI * drum.radius * drum.radius).toFloat(),
+                    inside = { p ->
+                        val dx = p.x - top.x
+                        val dz = p.z - top.z
+                        dx * dx + dz * dz <= drum.radius * drum.radius
+                    },
+                )
+            }
+
     /** The nearest surface along [ray], or null when it leaves the room. */
     fun raycast(ray: Ray): SimHit? {
         var nearest: SimHit? = null
@@ -86,10 +147,12 @@ class SimWorld(
             if (hit != null && hit.distance < (nearest?.distance ?: Float.MAX_VALUE)) nearest = hit
         }
         ground.forEach { offer(hitQuad(it, ray)) }
-        boxes.forEach { box -> box.faces.forEach { offer(hitQuad(it, ray)) } }
+        boxes.forEach { box -> box.faces.forEach { face -> offer(hitQuad(face, ray)?.ownedBy(box)) } }
         drums.forEach { offer(hitDrum(it, ray)) }
         return nearest
     }
+
+    private fun SimHit.ownedBy(owner: Any) = SimHit(distance, point, normal, surface, owner)
 
     private fun hitQuad(quad: SimQuad, ray: Ray): SimHit? {
         val incidence = ray.direction dot quad.normal
@@ -115,7 +178,7 @@ class SimWorld(
             val dx = point.x - drum.base.x
             val dz = point.z - drum.base.z
             if (distance > 0f && dx * dx + dz * dz <= drum.radius * drum.radius) {
-                best = SimHit(distance, point, Vec3.UP, AnchorSurface.PLANE)
+                best = SimHit(distance, point, Vec3.UP, AnchorSurface.PLANE, drum)
             }
         }
 
@@ -136,7 +199,7 @@ class SimWorld(
                 ) {
                     val outward = Vec3(point.x - drum.base.x, 0f, point.z - drum.base.z)
                     best = SimHit(
-                        distance, point, outward.normalized() ?: Vec3.UP, AnchorSurface.POINT,
+                        distance, point, outward.normalized() ?: Vec3.UP, AnchorSurface.POINT, drum,
                     )
                 }
             }
@@ -179,10 +242,10 @@ class SimWorld(
                 SimQuad(Vec3(0f, 1.3f, WALL_Z), Vec3(3f, 0f, 0f), Vec3(0f, 1.3f, 0f), Vec3(0f, 0f, 1f)),
             ),
             boxes = listOf(
-                SimBox(Vec3(0.5f, 0f, -2.3f), CRATE_LENGTH, CRATE_WIDTH, CRATE_HEIGHT, yawDegrees = 25f),
+                SimBox("Crate", Vec3(0.5f, 0f, -2.3f), CRATE_LENGTH, CRATE_WIDTH, CRATE_HEIGHT, yawDegrees = 25f),
             ),
             drums = listOf(
-                SimDrum(Vec3(-0.55f, 0f, -2.4f), DRUM_DIAMETER / 2f, DRUM_HEIGHT),
+                SimDrum("Drum", Vec3(-0.55f, 0f, -2.4f), DRUM_DIAMETER / 2f, DRUM_HEIGHT),
             ),
             markings = outline(DOOR_CORNERS) + outline(RUG_CORNERS),
         )

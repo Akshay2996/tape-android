@@ -15,6 +15,12 @@ enum class MeasureTool(
     val surfacePoints: Int?,
     val hasLift: Boolean,
 ) {
+    /**
+     * Tap an object and Tape fits a box round it from depth data — no
+     * corners to place. Walking round it while it scans fills in the far side.
+     */
+    OBJECT("Object", 1, false),
+
     /** Straight distance between two points. */
     LINE("Line", 2, false),
 

@@ -85,9 +85,6 @@ import com.tape.measure.ui.theme.TapeMeasurement
 import io.github.sceneview.ar.ARScene
 import kotlin.math.roundToInt
 
-/** Label a practice-room measurement is saved under, so it can't pass for a real one. */
-private const val PRACTICE_LABEL = "Practice room"
-
 /**
  * The measurement screen.
  *
@@ -121,17 +118,7 @@ fun MeasureScreen(
             .onSizeChanged {
                 viewport = it
                 viewModel.setViewport(it.width, it.height)
-            }
-            .then(
-                if (simulated) {
-                    Modifier.lookOrTap(
-                        onLook = { yaw, pitch -> simCamera = simCamera.look(yaw, pitch) },
-                        onTap = { viewModel.tap() },
-                    )
-                } else {
-                    Modifier.pointerInput(Unit) { detectTapGestures { viewModel.tap() } }
-                }
-            ),
+            },
     ) {
 
         // ── 1. The world ─────────────────────────────────────────────────────
@@ -150,19 +137,35 @@ fun MeasureScreen(
         } else {
             ARScene(
                 modifier = Modifier.fillMaxSize(),
-                planeRenderer = true,
+                // No dot grid over detected surfaces: the reticle turning
+                // amber already says "this is a surface", with less clutter.
+                planeRenderer = false,
                 sessionConfiguration = ::configureForMeasuring,
-                onSessionUpdated = { _, frame -> viewModel.onFrame(ArCoreFrame(frame)) },
+                onSessionUpdated = { session, frame -> viewModel.onFrame(ArCoreFrame(session, frame)) },
                 onSessionFailed = { _ -> onDeviceUnsupported() },
             )
         }
 
         // ── 2. Shape overlay ─────────────────────────────────────────────────
+        // Touches are caught here, on the layer above the world, not on the
+        // outer Box: ARScene is an Android View and consumes every touch it
+        // sees, so a listener behind it never receives the tap.
         ShapeOverlay(
             overlay = uiState.overlay,
             reticleLocked = uiState.reticleLocked,
             showReticle = !uiState.isComplete,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (simulated) {
+                        Modifier.lookOrTap(
+                            onLook = { yaw, pitch -> simCamera = simCamera.look(yaw, pitch) },
+                            onTap = { viewModel.tap() },
+                        )
+                    } else {
+                        Modifier.pointerInput(Unit) { detectTapGestures { viewModel.tap() } }
+                    }
+                ),
         )
 
         // ── 3. Dimension labels ──────────────────────────────────────────────
@@ -230,7 +233,7 @@ fun MeasureScreen(
             onUndo = viewModel::undo,
             onReset = viewModel::reset,
             onFinish = viewModel::finish,
-            onSave = { viewModel.saveMeasurement(if (simulated) PRACTICE_LABEL else "") },
+            onSave = { viewModel.saveMeasurement(practice = simulated) },
         )
     }
 }
@@ -519,27 +522,35 @@ private fun BottomControls(
         }
 
         // A lone figure on a lone edge is already written beside it; anything
-        // else needs the table, or its headline would appear nowhere.
-        if (uiState.readings.isNotEmpty() && !uiState.headlineOnLabel) {
+        // else needs the table, or its headline would appear nowhere. While an
+        // object is still being scanned its numbers move every frame, and the
+        // box's own labels already show them, so the table waits for Done.
+        val scanning = uiState.tool == MeasureTool.OBJECT && !uiState.isComplete
+        if (uiState.readings.isNotEmpty() && !uiState.headlineOnLabel && !scanning) {
             ReadingsCard(
+                title = uiState.objectName,
                 readings = uiState.readings,
                 unitSystem = uiState.unitSystem,
                 modifier = Modifier.padding(horizontal = 24.dp),
             )
         }
 
-        Row(
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            MeasureTool.entries.forEach { tool ->
-                Chip(
-                    label = tool.label,
-                    selected = tool == uiState.tool,
-                    onClick = { onSelectTool(tool) },
-                )
+        // Tools are picked before measuring, not during: once something is
+        // placed the row gives way to the actions. Reset brings it back.
+        if (!uiState.canUndo) {
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                MeasureTool.entries.forEach { tool ->
+                    Chip(
+                        label = tool.label,
+                        selected = tool == uiState.tool,
+                        onClick = { onSelectTool(tool) },
+                    )
+                }
             }
         }
 
@@ -584,6 +595,7 @@ private fun BottomControls(
 /** Every figure the shape reports, each with its own error bound. */
 @Composable
 private fun ReadingsCard(
+    title: String?,
     readings: List<Reading>,
     unitSystem: UnitSystem,
     modifier: Modifier = Modifier,
@@ -598,6 +610,14 @@ private fun ReadingsCard(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            if (title != null) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
             readings.forEachIndexed { index, reading ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(

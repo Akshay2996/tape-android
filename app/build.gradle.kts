@@ -118,6 +118,10 @@ dependencies {
     // Coroutines (explicit — also pulled transitively via Hilt/Room)
     implementation(libs.kotlinx.coroutines.android)
 
+    // ML Kit, bundled models: runs on the phone, works offline, sends nothing anywhere.
+    implementation(libs.mlkit.detection)
+    implementation(libs.mlkit.labeling)
+
     // DataStore — user preferences (unit default, theme)
     implementation(libs.androidx.datastore.preferences)
 

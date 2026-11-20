@@ -3,11 +3,16 @@ package com.tape.measure.domain.shape
 import com.tape.measure.domain.accuracy.AnchorObservation
 import com.tape.measure.domain.accuracy.AnchorSurface
 import com.tape.measure.domain.ar.ArFrame
+import com.tape.measure.domain.ar.PendingIdentification
 import com.tape.measure.domain.ar.Pin
 import com.tape.measure.domain.ar.SurfaceHit
 import com.tape.measure.domain.ar.TrackingStatus
 import com.tape.measure.domain.geometry.Projector
 import com.tape.measure.domain.geometry.Vec3
+import com.tape.measure.domain.model.AccuracyGrade
+import com.tape.measure.domain.scan.ObjectFit
+import com.tape.measure.domain.scan.ObjectScan
+import com.tape.measure.domain.scan.Silhouette
 import kotlin.math.abs
 
 /** What the next tap will do. */
@@ -17,6 +22,12 @@ enum class Stage {
 
     /** Set a height by tilting the phone. */
     AIM_LIFT,
+
+    /** Working out what the tapped object is and where its outline is. */
+    IDENTIFYING,
+
+    /** Fitting a box to the tapped object while the user moves around it. */
+    SCANNING,
 
     /** The shape is finished; a tap starts a new one. */
     COMPLETE,
@@ -35,6 +46,8 @@ data class SessionState(
     val canFinish: Boolean,
     val canSave: Boolean,
     val hint: String,
+    /** What the measured object is, such as "Chair", when it was recognised. */
+    val objectName: String? = null,
 )
 
 /**
@@ -52,7 +65,7 @@ data class SessionState(
  */
 class MeasureSession {
 
-    var tool: MeasureTool = MeasureTool.LINE
+    var tool: MeasureTool = MeasureTool.OBJECT
         private set
 
     private class Placed(
@@ -63,6 +76,23 @@ class MeasureSession {
 
     private val placed = ArrayList<Placed>()
     private var lift: ObservedLift? = null
+
+    /** The object being measured, for [MeasureTool.OBJECT]. */
+    private var scan: ObjectScan? = null
+
+    /** Why the last tap couldn't start a scan, until the next tap. */
+    private var refusal: String? = null
+
+    /** The tap being identified: what is running, where it was, how it was seen. */
+    private class Identifying(
+        val pending: PendingIdentification,
+        val seed: Vec3,
+        val tappedFrom: Projector,
+        var frames: Int = 0,
+    )
+
+    private var identifying: Identifying? = null
+    private var objectName: String? = null
 
     /** Set when the user ends a tool early or closes an open-ended one. */
     private var finished = false
@@ -78,6 +108,8 @@ class MeasureSession {
     fun undo() {
         when {
             finished            -> finished = false
+            identifying != null -> identifying = null
+            scan != null        -> { scan = null; objectName = null }
             lift != null        -> lift = null
             placed.isNotEmpty() -> placed.removeAt(placed.lastIndex).pin.release()
         }
@@ -99,11 +131,22 @@ class MeasureSession {
 
         if (confirm && tracking) {
             when (stage()) {
-                Stage.AIM_SURFACE -> frame.hitTest(centerX, centerY)?.takeIf(::isNewPoint)?.let(::place)
+                Stage.AIM_SURFACE ->
+                    if (tool == MeasureTool.OBJECT) {
+                        frame.hitTest(centerX, centerY)?.let {
+                            identifying = Identifying(frame.identify(centerX, centerY), it.point, projector)
+                            refusal = null
+                        }
+                    } else {
+                        frame.hitTest(centerX, centerY)?.takeIf(::isNewPoint)?.let(::place)
+                    }
                 Stage.AIM_LIFT    -> aimLift(projector, centerX, centerY)?.let { lift = it }
+                Stage.IDENTIFYING -> Unit   // already on it
+                Stage.SCANNING    -> finish()
                 Stage.COMPLETE    -> clear()   // a tap on a finished shape starts over
             }
         }
+        if (tool == MeasureTool.OBJECT) return updateObject(frame, tracking, conditions, centerX, centerY)
 
         val stage = stage()
         val positions = placed.map { it.pin.position }
@@ -169,7 +212,114 @@ class MeasureSession {
         placed.forEach { it.pin.release() }
         placed.clear()
         lift = null
+        scan = null
+        refusal = null
+        identifying = null
+        objectName = null
         finished = false
+    }
+
+    // ── Object tool ──────────────────────────────────────────────────────────
+
+    /**
+     * Starts the scan once identification is done — or once it has taken too
+     * long, in which case the object is measured without a name or outline
+     * rather than leaving the user waiting.
+     */
+    private fun continueIdentifying(frame: ArFrame) {
+        val pending = identifying ?: return
+        pending.frames++
+        val identified = pending.pending.result()
+        if (identified == null && pending.frames < IDENTIFY_TIMEOUT_FRAMES) return
+        identifying = null
+
+        val silhouette = identified?.outline?.let { Silhouette(pending.tappedFrom, it.grownBy(OUTLINE_MARGIN)) }
+        when (val start = ObjectScan.start(pending.seed, frame, silhouette)) {
+            is ObjectScan.Start.Started -> {
+                scan = start.scan
+                objectName = identified?.name
+                refusal = null
+            }
+            is ObjectScan.Start.Refused -> refusal = start.reason
+        }
+    }
+
+    private fun updateObject(
+        frame: ArFrame,
+        tracking: Boolean,
+        conditions: Conditions,
+        centerX: Float,
+        centerY: Float,
+    ): SessionState {
+        if (identifying != null && tracking) continueIdentifying(frame)
+        val scan = scan
+        // Keep learning the object while scanning; a finished one stays put.
+        if (scan != null && !finished && tracking) scan.add(frame)
+
+        val stage = stage()
+        val fit = scan?.fit
+        val solution = when {
+            fit == null -> Solution()
+            !tracking -> Solution(accuracy = ShapeSolver.refusal(conditions))
+            else -> objectSolution(fit, conditions)
+        }
+        val reticleLocked = stage == Stage.AIM_SURFACE && tracking && frame.hitTest(centerX, centerY) != null
+        val verdict = solution.accuracy
+        return SessionState(
+            tool = tool,
+            stage = stage,
+            dots = emptyList(),
+            solution = solution,
+            reticleLocked = reticleLocked,
+            canUndo = scan != null || identifying != null,
+            canFinish = canFinish(),
+            canSave = stage == Stage.COMPLETE && verdict?.grade?.hasTolerance == true,
+            objectName = objectName,
+            hint = when {
+                !tracking -> guidance(stage, tracking = false, reticleLocked = false)
+                stage == Stage.IDENTIFYING -> "Identifying…"
+                stage == Stage.AIM_SURFACE -> refusal ?: guidance(stage, tracking = true, reticleLocked)
+                stage == Stage.COMPLETE -> verdict?.reason ?: guidance(stage, tracking = true, reticleLocked)
+                fit == null -> named("Hold steady on it. Get closer if no box appears.")
+                !fit.complete -> named("Look down on it, or walk part way round. Then tap Done.")
+                else -> named("Got it. Tap Done.")
+            },
+        )
+    }
+
+    /** [text], led by what the object is when that is known: "Chair · Got it." */
+    private fun named(text: String): String = objectName?.let { "$it · $text" } ?: text
+
+    /**
+     * The fitted box, solved like a box placed by hand, so its readings and
+     * tolerances come from the same code. Its corners were never tapped: they
+     * are inferred from depth, so they are graded as off-plane points, and
+     * the depth resolution is added to every edge.
+     */
+    private fun objectSolution(fit: ObjectFit, conditions: Conditions): Solution {
+        val observation = AnchorObservation(fit.rangeMeters, AnchorSurface.POINT, isTracking = true)
+        val (c0, c1, _, c3) = fit.corners
+        val solution = ShapeSolver.solve(
+            tool = MeasureTool.OBJECT,
+            points = listOf(c0, c1, c3).map { ObservedPoint(it, observation) },
+            normal = Vec3.UP,
+            lift = ObservedLift(fit.height, observation),
+            conditions = conditions,
+            resolution = fit.resolution,
+        )
+        val accuracy = solution.accuracy ?: return solution
+        return solution.copy(
+            accuracy = if (fit.complete) {
+                accuracy.copy(reason = "Box fitted to what the camera saw. Get closer for sharper edges.")
+            } else {
+                // A box seen from one side has a depth that is only a guess,
+                // however tight each edge's bound looks.
+                ShapeAccuracy(
+                    grade = if (accuracy.grade.ordinal >= AccuracyGrade.LOW.ordinal) accuracy.grade else AccuracyGrade.LOW,
+                    reason = "Seen from one side only, so its far side is a guess.",
+                )
+            },
+        )
     }
 
     /**
@@ -190,6 +340,11 @@ class MeasureSession {
         val needed = tool.surfacePoints
         return when {
             finished                     -> Stage.COMPLETE
+            tool == MeasureTool.OBJECT   -> when {
+                identifying != null -> Stage.IDENTIFYING
+                scan == null        -> Stage.AIM_SURFACE
+                else                -> Stage.SCANNING
+            }
             needed == null               -> Stage.AIM_SURFACE
             placed.size < needed         -> Stage.AIM_SURFACE
             tool.hasLift && lift == null -> Stage.AIM_LIFT
@@ -201,6 +356,7 @@ class MeasureSession {
         MeasureTool.PATH -> placed.size >= 2
         MeasureTool.AREA -> placed.size >= 3
         MeasureTool.BOX, MeasureTool.CYLINDER -> stage() == Stage.AIM_LIFT
+        MeasureTool.OBJECT -> scan?.fit != null
         else -> false
     }
 
@@ -249,11 +405,14 @@ class MeasureSession {
         val n = placed.size
         return when (stage) {
             Stage.COMPLETE -> "Tap to start a new measurement."
+            Stage.SCANNING -> "Walk slowly round it, then tap Done."
+            Stage.IDENTIFYING -> "Identifying…"
             Stage.AIM_LIFT -> when (tool) {
                 MeasureTool.HEIGHT -> "Tilt to the top and tap."
                 else               -> "Tilt to the other face and tap. Done keeps it flat."
             }
             Stage.AIM_SURFACE -> when (tool) {
+                MeasureTool.OBJECT -> "Aim at the object and tap."
                 MeasureTool.LINE ->
                     if (n == 0) "Aim at the first point and tap." else "Aim at the second point and tap."
                 MeasureTool.PATH ->
@@ -278,6 +437,12 @@ class MeasureSession {
     }
 
     private companion object {
+        /** About a second and a half: after this, measure without a name. */
+        const val IDENTIFY_TIMEOUT_FRAMES = 45
+
+        /** Outlines from the detector are tight; allow a little either side. */
+        const val OUTLINE_MARGIN = 0.08f
+
         /** Closer than this to the last point, the reticle hasn't moved on yet. */
         const val MIN_SEPARATION_METERS = 0.005f
 

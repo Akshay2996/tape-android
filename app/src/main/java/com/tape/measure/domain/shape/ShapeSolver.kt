@@ -45,6 +45,9 @@ object ShapeSolver {
      *
      * @param normal unit normal of the surface the shape sits on.
      * @param lift the height step, for tools that have one and once it is set.
+     * @param resolution smallest detail the points could resolve, in metres,
+     *        added to every span's bound. Zero for tapped points; a box fitted
+     *        to depth data is only as sharp as that data.
      */
     fun solve(
         tool: MeasureTool,
@@ -52,8 +55,9 @@ object ShapeSolver {
         normal: Vec3,
         lift: ObservedLift?,
         conditions: Conditions,
+        resolution: Float = 0f,
     ): Solution {
-        val builder = Builder(conditions)
+        val builder = Builder(conditions, resolution)
         when (tool) {
             MeasureTool.LINE     -> builder.path(points.take(2))
             MeasureTool.PATH     -> builder.path(points)
@@ -62,7 +66,8 @@ object ShapeSolver {
             MeasureTool.HEIGHT   -> builder.height(points, normal, lift)
             MeasureTool.CIRCLE   -> builder.circle(points, normal, lift = null)
             MeasureTool.CYLINDER -> builder.circle(points, normal, lift)
-            MeasureTool.BOX      -> builder.box(points, normal, lift)
+            MeasureTool.BOX,
+            MeasureTool.OBJECT   -> builder.box(points, normal, lift)
         }
         return builder.build()
     }
@@ -101,7 +106,10 @@ object ShapeSolver {
         )
     }
 
-    private class Builder(private val conditions: Conditions) {
+    private class Builder(
+        private val conditions: Conditions,
+        private val resolution: Float,
+    ) {
         private val wire = ArrayList<Segment3>()
         private val labels = ArrayList<Label3>()
         private val readings = ArrayList<Reading>()
@@ -347,9 +355,20 @@ object ShapeSolver {
             length: Float,
             a: AnchorObservation,
             b: AnchorObservation,
-        ): AccuracyEstimate = AccuracyEngine.estimate(
-            AccuracyInput(length, conditions.cameraIsTracking, conditions.issue, a, b)
-        ).also { spans += it }
+        ): AccuracyEstimate {
+            val estimate = AccuracyEngine.estimate(
+                AccuracyInput(length, conditions.cameraIsTracking, conditions.issue, a, b)
+            )
+            val widened = if (resolution > 0f && estimate.grade.hasTolerance) {
+                // Independent of the tracking error, so it adds in quadrature.
+                val tolerance = sqrt(estimate.toleranceMeters * estimate.toleranceMeters + resolution * resolution)
+                val relative = tolerance / length
+                estimate.copy(toleranceMeters = tolerance, relative = relative, grade = AccuracyEngine.gradeFor(relative))
+            } else {
+                estimate
+            }
+            return widened.also { spans += it }
+        }
 
         /** Draws, labels and bounds the span between two placed points. */
         private fun measuredEdge(a: ObservedPoint, b: ObservedPoint): Measured {

@@ -56,7 +56,9 @@ data class MeasureOverlay(
  * rebuilt every camera frame.
  */
 data class MeasureUiState(
-    val tool: MeasureTool = MeasureTool.LINE,
+    val tool: MeasureTool = MeasureTool.OBJECT,
+    /** What the measured object is, such as "Chair", when it was recognised. */
+    val objectName: String? = null,
     val confidence: TrackingConfidence = TrackingConfidence.NOT_TRACKING,
     val overlay: MeasureOverlay = MeasureOverlay(),
     /** Every figure the shape reports, headline first. Empty until there is one. */

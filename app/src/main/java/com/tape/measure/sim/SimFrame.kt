@@ -3,10 +3,15 @@ package com.tape.measure.sim
 import com.tape.measure.domain.accuracy.AnchorSurface
 import com.tape.measure.domain.accuracy.TrackingIssue
 import com.tape.measure.domain.ar.ArFrame
+import com.tape.measure.domain.ar.DepthGrid
+import com.tape.measure.domain.ar.Identified
+import com.tape.measure.domain.ar.PendingIdentification
 import com.tape.measure.domain.ar.Pin
 import com.tape.measure.domain.ar.SurfaceHit
+import com.tape.measure.domain.ar.SurfacePlane
 import com.tape.measure.domain.ar.TrackingStatus
 import com.tape.measure.domain.geometry.Projector
+import com.tape.measure.domain.geometry.ScreenBox
 import com.tape.measure.domain.geometry.Vec3
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -96,6 +101,44 @@ class SimFrame(
         return SimSurfaceHit(hit.point, hit.normal, hit.distance, hit.surface)
     }
 
+    /** A depth image at about the Pixel's resolution, by casting a ray per cell. Computed once. */
+    private val depth: DepthGrid by lazy {
+        val columns = DEPTH_CELLS_ACROSS
+        val rows = (DEPTH_CELLS_ACROSS * height.toFloat() / width).toInt()
+        val points = arrayOfNulls<Vec3>(columns * rows)
+        for (row in 0 until rows) {
+            for (column in 0 until columns) {
+                val ray = projector.rayThrough((column + 0.5f) * width / columns, (row + 0.5f) * height / rows)
+                points[row * columns + column] = world.raycast(ray)?.point
+            }
+        }
+        DepthGrid(
+            width = columns,
+            height = rows,
+            points = points,
+            cellAngle = Math.toRadians(FOV_Y_DEGREES.toDouble()).toFloat() / rows,
+            cameraPosition = projector.cameraPosition,
+        )
+    }
+
+    override fun depthGrid(): DepthGrid = depth
+
+    override fun planes(): List<SurfacePlane> = world.planes
+
+    /**
+     * The room knows what everything is, so identification is exact and
+     * immediate: the object's name, and its outline from its true shape.
+     * Floors and walls aren't objects, so they come back unnamed.
+     */
+    override fun identify(x: Float, y: Float): PendingIdentification {
+        val identified = when (val owner = world.raycast(projector.rayThrough(x, y))?.owner) {
+            is SimBox  -> Identified(owner.name, ScreenBox.around(owner.outline.mapNotNull(projector::project)))
+            is SimDrum -> Identified(owner.name, ScreenBox.around(owner.outline.mapNotNull(projector::project)))
+            else       -> Identified(name = null, outline = null)
+        }
+        return PendingIdentification { identified }
+    }
+
     private class SimSurfaceHit(
         override val point: Vec3,
         override val normal: Vec3,
@@ -111,5 +154,8 @@ class SimFrame(
 
     companion object {
         const val FOV_Y_DEGREES = 60f
+
+        /** Close to the 160 × 90 depth image a Pixel produces. */
+        private const val DEPTH_CELLS_ACROSS = 90
     }
 }
