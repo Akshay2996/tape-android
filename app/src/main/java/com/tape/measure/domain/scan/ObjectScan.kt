@@ -230,7 +230,8 @@ class ObjectScan private constructor(
     // ── Fitting ──────────────────────────────────────────────────────────────
 
     private fun fitBox(planes: List<SurfacePlane>): ObjectFit? {
-        val points = voxels.values.map { Vec3(it.sumX / it.count, it.sumY / it.count, it.sumZ / it.count) }
+        val points = solidVoxels().map { Vec3(it.sumX / it.count, it.sumY / it.count, it.sumZ / it.count) }
+        if (points.isEmpty()) return null
         val footprint = Footprint.enclosing(points.map { Flat(it.x, it.z) }) ?: return null
 
         val lowest = points.minOf { it.y }
@@ -269,6 +270,25 @@ class ObjectScan private constructor(
         )
     }
 
+    /**
+     * Voxels backed up by their neighbours. A real surface fills neighbouring
+     * voxels; a stray depth reading sits on its own, and one of those would
+     * otherwise set a whole side of the box — the box spans every point.
+     */
+    private fun solidVoxels(): List<Voxel> {
+        val solid = voxels.filter { (key, _) ->
+            var neighbours = 0
+            for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
+                if (dx == 0 && dy == 0 && dz == 0) continue
+                if (voxels.containsKey(offset(key, dx, dy, dz))) neighbours++
+            }
+            neighbours >= MIN_NEIGHBOURS
+        }
+        // Too little left means the object is tiny or barely seen yet: better
+        // every point than none.
+        return if (solid.size >= MIN_SOLID_VOXELS) solid.values.toList() else voxels.values.toList()
+    }
+
     /** How far round the object the camera has been: 360° minus the biggest gap. */
     private fun azimuthSpread(): Float {
         if (azimuths.size < 2) return 0f
@@ -294,6 +314,8 @@ class ObjectScan private constructor(
         private const val LARGE_LEVEL_AREA = 0.25f
         private const val LARGE_OTHER_AREA = 1.5f
         private const val ABOVE_TOP_METERS = 0.1f
+        private const val MIN_NEIGHBOURS = 2
+        private const val MIN_SOLID_VOXELS = 8
         private val MIN_SPREAD_RADIANS = (100.0 * PI / 180.0).toFloat()
         private const val MAX_RANGE_SAMPLES = 20_000
 
@@ -307,6 +329,14 @@ class ObjectScan private constructor(
         private fun key(p: Vec3): Long {
             fun cell(v: Float) = (floor(v / VOXEL_METERS).toInt() + OFFSET).toLong() and FIELD
             return (cell(p.x) shl (2 * BITS)) or (cell(p.y) shl BITS) or cell(p.z)
+        }
+
+        /** The key of the voxel [dx], [dy], [dz] cells away from [key]'s. */
+        private fun offset(key: Long, dx: Int, dy: Int, dz: Int): Long {
+            val x = ((key shr (2 * BITS)) and FIELD) + dx
+            val y = ((key shr BITS) and FIELD) + dy
+            val z = (key and FIELD) + dz
+            return ((x and FIELD) shl (2 * BITS)) or ((y and FIELD) shl BITS) or (z and FIELD)
         }
 
         /**

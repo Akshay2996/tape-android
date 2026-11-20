@@ -146,8 +146,8 @@ class SimFrame(
         override val surface: AnchorSurface,
     ) : SurfaceHit {
         // Nothing drifts in a simulated room, so a pin is just the point itself.
-        override fun pin(): Pin = object : Pin {
-            override val position: Vec3 = point
+        override fun pin(at: Vec3): Pin = object : Pin {
+            override val position: Vec3 = at
             override fun release() = Unit
         }
     }

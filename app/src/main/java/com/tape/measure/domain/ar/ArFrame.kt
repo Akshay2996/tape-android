@@ -104,8 +104,11 @@ interface SurfaceHit {
 
     val surface: AnchorSurface
 
-    /** Fixes this point to the world so it stays put as the camera moves. */
-    fun pin(): Pin
+    /**
+     * Fixes a point to the world so it stays put as the camera moves: [at]
+     * if given — a steadier estimate of this same spot — or the hit itself.
+     */
+    fun pin(at: Vec3 = point): Pin
 }
 
 /** A point fixed to the world. */

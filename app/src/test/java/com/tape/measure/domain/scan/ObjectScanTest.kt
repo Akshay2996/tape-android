@@ -68,6 +68,18 @@ class ObjectScanTest {
     }
 
     @Test
+    fun `a stray depth reading does not stretch the box`() {
+        // One reading 3 cm above the top, next to it in the depth image: near
+        // enough to join the object, alone enough to be noise.
+        val stray = patch + ((11 to 5) to Vec3(0.11f, 0.33f, 0.05f))
+        val scan = started(Vec3(0.05f, 0.3f, 0.05f))
+
+        scan.add(frame(stray))
+
+        assertTrue("height ${scan.fit!!.height} m was raised by one stray point", scan.fit!!.height < 0.315f)
+    }
+
+    @Test
     fun `frames taken while the phone moves too fast are skipped`() {
         val scan = started(Vec3(0.05f, 0.3f, 0.05f))
 

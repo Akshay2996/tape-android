@@ -87,7 +87,24 @@ class ArCoreFrame(private val session: Session, private val frame: Frame) : ArFr
      * practically at the same distance, the plane is the better anchor: it is
      * a surface fitted over many frames rather than a single depth sample.
      */
+    // A frame is asked the same things several times — the reticle's hit,
+    // the planes, the depth — so each is worked out once per frame.
+    private var lastHitAt: Pair<Float, Float>? = null
+    private var lastHit: SurfaceHit? = null
+    private var depth: DepthGrid? = null
+    private var depthRead = false
+    private val planeList: List<SurfacePlane> by lazy {
+        session.getAllTrackables(Plane::class.java)
+            .filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }
+            .map(::ArCorePlane)
+    }
+
     override fun hitTest(x: Float, y: Float): SurfaceHit? {
+        if (lastHitAt == (x to y)) return lastHit
+        return hitTestNow(x, y).also { lastHitAt = x to y; lastHit = it }
+    }
+
+    private fun hitTestNow(x: Float, y: Float): SurfaceHit? {
         val usable = frame.hitTest(x, y).filter { it.surfaceOrNull() != null }
         val nearest = usable.firstOrNull() ?: return null
         val plane = usable.firstOrNull { it.surfaceOrNull() == AnchorSurface.PLANE }
@@ -103,6 +120,11 @@ class ArCoreFrame(private val session: Session, private val frame: Frame) : ArFr
      * low-confidence, and the gap is what tells one thing from the next.
      */
     override fun depthGrid(): DepthGrid? {
+        if (!depthRead) { depth = readDepth(); depthRead = true }
+        return depth
+    }
+
+    private fun readDepth(): DepthGrid? {
         if (camera.trackingState != TrackingState.TRACKING) return null
         val depthImage = try {
             frame.acquireRawDepthImage16Bits()
@@ -185,20 +207,41 @@ class ArCoreFrame(private val session: Session, private val frame: Frame) : ArFr
         }
     }
 
-    override fun planes(): List<SurfacePlane> =
-        session.getAllTrackables(Plane::class.java)
-            .filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }
-            .map(::ArCorePlane)
+    override fun planes(): List<SurfacePlane> = planeList
 
-    private class ArCorePlane(private val plane: Plane) : SurfacePlane {
+    /**
+     * A detected plane, with its outline copied out once so that "is this
+     * point on it?" is plain arithmetic — the object scan asks that for
+     * thousands of depth points a frame.
+     */
+    private class ArCorePlane(plane: Plane) : SurfacePlane {
         override val point: Vec3 = plane.centerPose.let { Vec3(it.tx(), it.ty(), it.tz()) }
         override val normal: Vec3 =
             plane.centerPose.yAxis.let { Vec3(it[0], it[1], it[2]) }.normalized() ?: Vec3.UP
         override val area: Float = plane.extentX * plane.extentZ
 
+        /** World → plane-local, where the outline is (x, z) pairs on the plane. */
+        private val toLocal = FloatArray(16).also { plane.centerPose.inverse().toMatrix(it, 0) }
+        private val outline: FloatArray = plane.polygon.let { buffer ->
+            buffer.rewind()
+            FloatArray(buffer.remaining()).also { buffer.get(it) }
+        }
+
         override fun contains(p: Vec3): Boolean {
-            val onPlane = p - normal * ((p - point) dot normal)
-            return plane.isPoseInPolygon(Pose.makeTranslation(onPlane.x, onPlane.y, onPlane.z))
+            val m = toLocal
+            val x = m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12]
+            val z = m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14]
+            // Even-odd ray crossing.
+            var inside = false
+            val n = outline.size / 2
+            var j = n - 1
+            for (i in 0 until n) {
+                val xi = outline[2 * i]; val zi = outline[2 * i + 1]
+                val xj = outline[2 * j]; val zj = outline[2 * j + 1]
+                if ((zi > z) != (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside
+                j = i
+            }
+            return inside
         }
     }
 
@@ -223,7 +266,16 @@ class ArCoreFrame(private val session: Session, private val frame: Frame) : ArFr
 
         override val surface: AnchorSurface = hit.surfaceOrNull() ?: AnchorSurface.POINT
 
-        override fun pin(): Pin = ArCorePin(hit.createAnchor())
+        override fun pin(at: Vec3): Pin {
+            if (at == point) return ArCorePin(hit.createAnchor())
+            // Attach the steadier estimate to the same surface the hit found.
+            val anchor = try {
+                hit.trackable.createAnchor(Pose.makeTranslation(at.x, at.y, at.z))
+            } catch (e: Exception) {
+                hit.createAnchor()
+            }
+            return ArCorePin(anchor)
+        }
     }
 
     private class ArCorePin(private val anchor: Anchor) : Pin {

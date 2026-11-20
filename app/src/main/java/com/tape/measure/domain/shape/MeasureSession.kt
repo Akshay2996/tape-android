@@ -94,6 +94,14 @@ class MeasureSession {
     private var identifying: Identifying? = null
     private var objectName: String? = null
 
+    /**
+     * Where the reticle landed on recent frames, and what height it pointed
+     * at. A single frame's reading wobbles with depth and tracking noise; a
+     * tap uses the median of the recent frames that agree with it.
+     */
+    private val recentAims = ArrayDeque<Vec3>()
+    private val recentLifts = ArrayDeque<Float>()
+
     /** Set when the user ends a tool early or closes an open-ended one. */
     private var finished = false
 
@@ -138,9 +146,9 @@ class MeasureSession {
                             refusal = null
                         }
                     } else {
-                        frame.hitTest(centerX, centerY)?.takeIf(::isNewPoint)?.let(::place)
+                        frame.hitTest(centerX, centerY)?.takeIf(::isNewPoint)?.let { place(it, steadyAim(it.point)) }
                     }
-                Stage.AIM_LIFT    -> aimLift(projector, centerX, centerY)?.let { lift = it }
+                Stage.AIM_LIFT    -> aimLift(projector, centerX, centerY)?.let { lift = it.copy(height = steadyLift(it.height)) }
                 Stage.IDENTIFYING -> Unit   // already on it
                 Stage.SCANNING    -> finish()
                 Stage.COMPLETE    -> clear()   // a tap on a finished shape starts over
@@ -163,6 +171,8 @@ class MeasureSession {
             } else {
                 null
             }
+        remember(recentAims, cursor?.point)
+        remember(recentLifts, liftPreview?.height)
 
         val solution = when {
             placed.isEmpty() -> Solution()
@@ -211,6 +221,8 @@ class MeasureSession {
     private fun clear() {
         placed.forEach { it.pin.release() }
         placed.clear()
+        recentAims.clear()
+        recentLifts.clear()
         lift = null
         scan = null
         refusal = null
@@ -332,9 +344,40 @@ class MeasureSession {
         return hit.point.distanceTo(last) > MIN_SEPARATION_METERS
     }
 
-    private fun place(hit: SurfaceHit) {
-        placed += Placed(hit.pin(), hit.observation(), hit.normal)
+    private fun place(hit: SurfaceHit, at: Vec3 = hit.point) {
+        placed += Placed(hit.pin(at), hit.observation(), hit.normal)
+        recentAims.clear()
     }
+
+    // ── Steadying ────────────────────────────────────────────────────────────
+
+    /** Keeps the last few readings; a frame with none breaks the run. */
+    private fun <T> remember(recent: ArrayDeque<T>, reading: T?) {
+        if (reading == null) {
+            recent.clear()
+            return
+        }
+        recent.addLast(reading)
+        while (recent.size > STEADY_FRAMES) recent.removeFirst()
+    }
+
+    /**
+     * The median of the recent aims that agree with [current], or [current]
+     * itself while the phone is moving and fewer than three agree.
+     */
+    private fun steadyAim(current: Vec3): Vec3 {
+        val agreeing = recentAims.filter { it.distanceTo(current) <= STEADY_RADIUS_METERS } + current
+        if (agreeing.size < MIN_STEADY_SAMPLES) return current
+        return Vec3(median(agreeing.map { it.x }), median(agreeing.map { it.y }), median(agreeing.map { it.z }))
+    }
+
+    /** As [steadyAim], for the height the phone is tilted to. */
+    private fun steadyLift(current: Float): Float {
+        val agreeing = recentLifts.filter { abs(it - current) <= STEADY_RADIUS_METERS } + current
+        return if (agreeing.size < MIN_STEADY_SAMPLES) current else median(agreeing)
+    }
+
+    private fun median(values: List<Float>): Float = values.sorted().let { it[it.size / 2] }
 
     private fun stage(): Stage {
         val needed = tool.surfacePoints
@@ -437,6 +480,15 @@ class MeasureSession {
     }
 
     private companion object {
+        /** Readings remembered for steadying a tap: about a quarter of a second. */
+        const val STEADY_FRAMES = 8
+
+        /** Readings further than this from the tapped one are from a moving phone. */
+        const val STEADY_RADIUS_METERS = 0.015f
+
+        /** Fewer agreeing readings than this, and the tap's own reading is used. */
+        const val MIN_STEADY_SAMPLES = 3
+
         /** About a second and a half: after this, measure without a name. */
         const val IDENTIFY_TIMEOUT_FRAMES = 45
 

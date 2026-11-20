@@ -1,5 +1,6 @@
 package com.tape.measure.ui.screens.measure
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tape.measure.data.db.MeasurementEntity
@@ -81,8 +82,28 @@ class MeasureViewModel @Inject constructor(
 
     // ── Per-frame update ─────────────────────────────────────────────────────
 
+    // Frame cost, logged now and then so slow frames show up in a phone's log.
+    private var timedFrames = 0
+    private var timedNanos = 0L
+    private var slowestNanos = 0L
+
     /** Applies queued actions, advances the session, and publishes the result. */
     fun onFrame(frame: ArFrame) {
+        val started = System.nanoTime()
+        try {
+            advance(frame)
+        } finally {
+            val spent = System.nanoTime() - started
+            timedNanos += spent
+            slowestNanos = maxOf(slowestNanos, spent)
+            if (++timedFrames == TIMED_FRAMES) {
+                Log.i(TAG, "frame avg %.1f ms, slowest %.1f ms".format(timedNanos / 1e6 / timedFrames, slowestNanos / 1e6))
+                timedFrames = 0; timedNanos = 0L; slowestNanos = 0L
+            }
+        }
+    }
+
+    private fun advance(frame: ArFrame) {
         var tapped = false
         var changed = false
         while (true) {
@@ -215,6 +236,8 @@ class MeasureViewModel @Inject constructor(
 
     private companion object {
         const val PRACTICE_LABEL = "Practice room"
+        const val TAG = "TapeFrame"
+        const val TIMED_FRAMES = 120
     }
 
     override fun onCleared() {
